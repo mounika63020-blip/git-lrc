@@ -6,8 +6,6 @@ AI agents write code fast. They also *silently remove logic*, change behavior, a
 
 **`git-lrc` fixes this.** It hooks into `git commit` and reviews every diff *before* it lands. 60-second setup. Completely free.
 
----
-
 ## Why
 
 - 🤖 **AI agents silently break things.** Code removed. Logic changed. Edge cases gone. You won't notice until production.
@@ -213,7 +211,6 @@ If it helps you — **share it with your developer friends.** The more people re
 
 > Using `git-lrc` solo? Great. Building with a team? Check out **[LiveReview](https://hexmos.com/livereview)** — the full suite for team-wide AI code review, with dashboards, org-level policies, and review analytics. Everything `git-lrc` does, plus team coordination.
 
----
 
 ## License
 
