@@ -13,7 +13,9 @@ AI agents write code fast. They also *silently remove logic*, change behavior, a
 - 🔁 **Build a habit, ship better code.** Regular review → fewer bugs → more robust code → better results in your team.
 - 🔗 **Why git?** Git is universal. Every editor, every IDE, every AI toolkit uses it. Committing is mandatory. So there's *almost no chance of missing a review* — regardless of your stack.
 
-## Install
+## Get Started
+
+### Install
 
 **Linux / macOS:**
 
@@ -29,7 +31,7 @@ iwr -useb https://hexmos.com/lrc-install.ps1 | iex
 
 Binary installed. Hooks set up globally. Done.
 
-## Setup
+### Setup
 
 ```bash
 git lrc setup
