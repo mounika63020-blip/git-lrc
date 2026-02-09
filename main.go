@@ -845,6 +845,9 @@ func runReviewWithOptions(opts reviewOptions) error {
 		fmt.Printf("\n🌐 Review available at: %s\n", highlightURL(serveURL))
 		fmt.Printf("   Comments will appear progressively as review runs\n\n")
 
+		// Auto-open the review in the default browser
+		openURL(serveURL)
+
 		// Mark that progressive loading is active
 		progressiveLoadingActive = true
 
