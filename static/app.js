@@ -11,6 +11,7 @@ import { getFileBlock } from './components/FileBlock.js';
 import { getEventLog } from './components/EventLog.js';
 import { getIssuesPanel } from './components/IssuesPanel.js';
 import { getToolbar } from './components/Toolbar.js';
+import { getCommentNav } from './components/CommentNav.js';
 
 // Convert API response to UI data format
 // Backend uses snake_case JSON keys (file_path, old_start_line, etc.)
@@ -153,6 +154,7 @@ async function initApp() {
     const EventLog = await getEventLog();
     const IssuesPanel = await getIssuesPanel();
     const Toolbar = await getToolbar();
+    const CommentNav = await getCommentNav();
     
     function App() {
         // Core data state - fetched from API
@@ -468,6 +470,30 @@ async function initApp() {
         const summary = reviewData?.summary || '';
         const files = reviewData?.Files || [];
         
+        // Build flat ordered list of all comments for navigation
+        const allComments = [];
+        const commentIds = [];
+        files.forEach(file => {
+            file.Hunks.forEach(hunk => {
+                hunk.Lines.forEach(line => {
+                    if (line.IsComment && line.Comments) {
+                        line.Comments.forEach((comment, commentIdx) => {
+                            const cid = `comment-${file.ID}-${comment.Line}-${commentIdx}`;
+                            allComments.push({
+                                filePath: file.FilePath,
+                                fileId: file.ID,
+                                line: comment.Line,
+                                commentId: cid
+                            });
+                            commentIds.push(cid);
+                        });
+                    }
+                });
+            });
+        });
+        // Stable key that only changes when the actual comment set changes
+        const commentKey = commentIds.join(',');
+        
         // Calculate totalComments from actual files - single source of truth
         const totalComments = files.reduce((sum, file) => sum + (file.CommentCount || 0), 0);
         
@@ -597,6 +623,12 @@ async function initApp() {
                     </div>
                 </div>
             </div>
+            <${CommentNav}
+                allComments=${allComments}
+                commentKey=${commentKey}
+                onNavigate=${navigateToComment}
+                activeTab=${activeTab}
+            />
         `;
     }
     
