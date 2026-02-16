@@ -2568,8 +2568,8 @@ func openURL(url string) error {
 
 	switch runtime.GOOS {
 	case "windows":
-		cmd = "cmd"
-		args = []string{"/c", "start"}
+		cmd = "rundll32"
+		args = []string{"url.dll,FileProtocolHandler", url}
 	case "darwin":
 		cmd = "open"
 	default: // "linux", "freebsd", "openbsd", "netbsd"
@@ -2583,10 +2583,6 @@ func openURL(url string) error {
 			cmd = "xdg-open"
 			args = []string{url}
 		}
-	}
-	if len(args) > 1 {
-		// args[0] is used for 'start' command argument, to prevent issues with URLs starting with a quote
-		args = append(args[:1], append([]string{""}, args[1:]...)...)
 	}
 	return exec.Command(cmd, args...).Start()
 }
