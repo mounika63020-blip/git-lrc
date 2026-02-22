@@ -1,10 +1,28 @@
+<div align="center">
+
+<img width="60" alt="git-lrc logo" src="https://hexmos.com/freedevtools/public/lr_logo.svg" />
+
 # git-lrc
 
-**Free, Unlimited AI Code Reviews That Run on Commit**
+[Site](https://hexmos.com/livereview/git-lrc/) · [LiveReview Cloud](https://hexmos.com/livereview/)
 
-AI agents write code fast. They also *silently remove logic*, change behavior, and introduce bugs -- without telling you. You often find out in production.
+### **Free, Unlimited AI Code Reviews That Run on Commit**
 
-**`git-lrc` fixes this.** It hooks into `git commit` and reviews every diff *before* it lands. 60-second setup. Completely free.
+</div>
+
+<br />
+
+<div align="center">
+<a href="https://www.producthunt.com/products/git-lrc?embed=true&amp;utm_source=badge-top-post-badge&amp;utm_medium=badge&amp;utm_campaign=badge-git-lrc" target="_blank" rel="noopener noreferrer"><img alt="git-lrc - Free, unlimited AI code reviews that run on commit | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1079262&amp;theme=light&amp;period=daily&amp;t=1771749170868"></a>
+</div>
+
+<br />
+
+---
+
+AI agents write code fast. They also _silently remove logic_, change behavior, and introduce bugs -- without telling you. You often find out in production.
+
+**`git-lrc` fixes this.** It hooks into `git commit` and reviews every diff _before_ it lands. 60-second setup. Completely free.
 
 ## See It In Action
 
@@ -13,13 +31,12 @@ AI agents write code fast. They also *silently remove logic*, change behavior, a
 
 https://github.com/user-attachments/assets/cc4aa598-a7e3-4a1d-998c-9f2ba4b4c66e
 
-
 ## Why
 
 - 🤖 **AI agents silently break things.** Code removed. Logic changed. Edge cases gone. You won't notice until production.
-- 🔍 **Catch it before it ships.** AI-powered inline comments show you *exactly* what changed and what looks wrong.
+- 🔍 **Catch it before it ships.** AI-powered inline comments show you _exactly_ what changed and what looks wrong.
 - 🔁 **Build a habit, ship better code.** Regular review → fewer bugs → more robust code → better results in your team.
-- 🔗 **Why git?** Git is universal. Every editor, every IDE, every AI toolkit uses it. Committing is mandatory. So there's *almost no chance of missing a review* — regardless of your stack.
+- 🔗 **Why git?** Git is universal. Every editor, every IDE, every AI toolkit uses it. Committing is mandatory. So there's _almost no chance of missing a review_ — regardless of your stack.
 
 ## Get Started
 
@@ -54,7 +71,7 @@ Two steps, both open in your browser:
 1. **LiveReview API key** — sign in with Hexmos
 2. **Free Gemini API key** — grab one from Google AI Studio
 
-**~1 minute. One-time setup, machine-wide.** After this, *every git repo* on your machine triggers review on commit. No per-repo config needed.
+**~1 minute. One-time setup, machine-wide.** After this, _every git repo_ on your machine triggers review on commit. No per-repo config needed.
 
 ## How It Works
 
@@ -80,7 +97,6 @@ Either way, a web UI opens in your browser.
 
 https://github.com/user-attachments/assets/ae063e39-379f-4815-9954-f0e2ab5b9cde
 
-
 ### The Review UI
 
 - 📄 **GitHub-style diff** — color-coded additions/deletions
@@ -94,14 +110,13 @@ https://github.com/user-attachments/assets/ae063e39-379f-4815-9954-f0e2ab5b9cde
 
 https://github.com/user-attachments/assets/b579d7c6-bdf6-458b-b446-006ca41fe47d
 
-
 ### The Decision
 
-| Action | What happens |
-|--------|-------------|
-| ✅ **Commit** | Accept and commit the reviewed changes |
-| 🚀 **Commit & Push** | Commit and push to remote in one step |
-| ⏭️ **Skip** | Abort the commit — go fix issues first |
+| Action               | What happens                           |
+| -------------------- | -------------------------------------- |
+| ✅ **Commit**        | Accept and commit the reviewed changes |
+| 🚀 **Commit & Push** | Commit and push to remote in one step  |
+| ⏭️ **Skip**          | Abort the commit — go fix issues first |
 
 ```
 📎 Screenshot: Pre-commit bar showing Commit / Commit & Push / Skip buttons
@@ -128,7 +143,7 @@ Once you've iterated enough and you're satisfied with the code:
 git lrc review --vouch
 ```
 
-This says: *"I've reviewed this — through AI iterations or personally — and I take responsibility."* No AI review runs, but coverage stats from prior iterations are recorded.
+This says: _"I've reviewed this — through AI iterations or personally — and I take responsibility."_ No AI review runs, but coverage stats from prior iterations are recorded.
 
 ### Skip
 
@@ -147,9 +162,11 @@ Every commit gets a **review status line** appended to its git log message:
 ```
 LiveReview Pre-Commit Check: ran (iter:3, coverage:85%)
 ```
+
 ```
 LiveReview Pre-Commit Check: vouched (iter:2, coverage:50%)
 ```
+
 ```
 LiveReview Pre-Commit Check: skipped
 ```
@@ -157,23 +174,23 @@ LiveReview Pre-Commit Check: skipped
 - **`iter`** — number of review cycles before committing. `iter:3` = three rounds of review → fix → review.
 - **`coverage`** — percentage of the final diff already AI-reviewed in prior iterations. `coverage:85%` = only 15% of the code is unreviewed.
 
-Your team sees *exactly* which commits were reviewed, vouched, or skipped — right in `git log`.
+Your team sees _exactly_ which commits were reviewed, vouched, or skipped — right in `git log`.
 
 ## FAQ
 
 ### Review vs Vouch vs Skip?
 
-| | **Review** | **Vouch** | **Skip** |
-|---|---|---|---|
-| AI reviews the diff? | ✅ Yes | ❌ No | ❌ No |
-| Takes responsibility? | ✅ Yes | ✅ Yes, explicitly | ⚠️ No |
-| Tracks iterations? | ✅ Yes | ✅ Records prior coverage | ❌ No |
-| Git log message | `ran (iter:N, coverage:X%)` | `vouched (iter:N, coverage:X%)` | `skipped` |
-| When to use | Each review cycle | Done iterating, ready to commit | Not reviewing this commit |
+|                       | **Review**                  | **Vouch**                       | **Skip**                  |
+| --------------------- | --------------------------- | ------------------------------- | ------------------------- |
+| AI reviews the diff?  | ✅ Yes                      | ❌ No                           | ❌ No                     |
+| Takes responsibility? | ✅ Yes                      | ✅ Yes, explicitly              | ⚠️ No                     |
+| Tracks iterations?    | ✅ Yes                      | ✅ Records prior coverage       | ❌ No                     |
+| Git log message       | `ran (iter:N, coverage:X%)` | `vouched (iter:N, coverage:X%)` | `skipped`                 |
+| When to use           | Each review cycle           | Done iterating, ready to commit | Not reviewing this commit |
 
 **Review** is the default. AI analyzes your staged diff and gives inline feedback. Each review is one iteration in the change–review cycle.
 
-**Vouch** means you're *explicitly taking responsibility* for this commit. Typically used after multiple review iterations — you've gone back and forth, fixed issues, and are now satisfied. The AI doesn't run again, but your prior iteration and coverage stats are recorded.
+**Vouch** means you're _explicitly taking responsibility_ for this commit. Typically used after multiple review iterations — you've gone back and forth, fixed issues, and are now satisfied. The AI doesn't run again, but your prior iteration and coverage stats are recorded.
 
 **Skip** means you're not reviewing this particular commit. Maybe it's trivial, maybe it's not critical — the reason is yours. The git log simply records `skipped`.
 
@@ -201,17 +218,17 @@ git lrc review --commit HEAD~3..HEAD  # review a range
 
 ## Quick Reference
 
-| Command | Description |
-|---------|-------------|
-| `lrc` or `lrc review` | Review staged changes |
-| `lrc review --vouch` | Vouch — skip AI, take personal responsibility |
-| `lrc review --skip` | Skip review for this commit |
-| `lrc review --commit HEAD` | Review an already-committed change |
-| `lrc hooks disable` | Disable hooks for current repo |
-| `lrc hooks enable` | Re-enable hooks for current repo |
-| `lrc hooks status` | Show hook status |
-| `lrc self-update` | Update to latest version |
-| `lrc version` | Show version info |
+| Command                    | Description                                   |
+| -------------------------- | --------------------------------------------- |
+| `lrc` or `lrc review`      | Review staged changes                         |
+| `lrc review --vouch`       | Vouch — skip AI, take personal responsibility |
+| `lrc review --skip`        | Skip review for this commit                   |
+| `lrc review --commit HEAD` | Review an already-committed change            |
+| `lrc hooks disable`        | Disable hooks for current repo                |
+| `lrc hooks enable`         | Re-enable hooks for current repo              |
+| `lrc hooks status`         | Show hook status                              |
+| `lrc self-update`          | Update to latest version                      |
+| `lrc version`              | Show version info                             |
 
 > **Tip:** `git lrc <command>` and `lrc <command>` are interchangeable.
 
@@ -223,7 +240,6 @@ If it helps you — **share it with your developer friends.** The more people re
 
 ⭐ **[Star this repo](https://github.com/HexmosTech/git-lrc)** to help others discover it.
 
-
 ## License
 
 `git-lrc` is distributed under a modified variant of **Sustainable Use License (SUL)**.
@@ -231,6 +247,7 @@ If it helps you — **share it with your developer friends.** The more people re
 > [!NOTE]
 >
 > **What this means:**
+>
 > - ✅ **Source Available** — Full source code is available for self-hosting
 > - ✅ **Business Use Allowed** — Use LiveReview for your internal business operations
 > - ✅ **Modifications Allowed** — Customize for your own use
