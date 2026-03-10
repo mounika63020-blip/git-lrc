@@ -244,7 +244,7 @@ git lrc review --commit HEAD~3..HEAD  # review a range
 
 > **Tip:** `git lrc <command>` and `lrc <command>` are interchangeable.
 
-## It's Free. Share It.
+## It's Free. Share it with your friends and colleagues.
 
 `git-lrc` is **completely free.** No credit card. No trial. No catch.
 
