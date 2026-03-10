@@ -992,6 +992,15 @@ func runReviewWithOptions(opts reviewOptions) error {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte("ok"))
 			})
+			mux.HandleFunc("/abort", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				progressiveDecide(decisionAbort, "", false)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ok"))
+			})
 			// Proxy endpoint for review-events API to avoid CORS
 			mux.HandleFunc("/api/v1/diff-review/", func(w http.ResponseWriter, r *http.Request) {
 				// Forward request to backend API with authentication
@@ -1063,7 +1072,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 	// For post-commit reviews, just poll and get results without interactive flow
 	if isPostCommitReview {
 		var pollErr error
-		result, pollErr = pollReview(config.APIURL, config.APIKey, reviewID, opts.pollInterval, opts.timeout, verbose)
+		result, pollErr = pollReview(config.APIURL, config.APIKey, reviewID, opts.pollInterval, opts.timeout, verbose, nil)
 		if pollErr != nil {
 			// If progressive loading is active, don't crash - keep server running to show error
 			if progressiveLoadingActive {
@@ -1133,8 +1142,11 @@ func runReviewWithOptions(opts reviewOptions) error {
 		var pollResult *diffReviewResponse
 		var pollErr error
 		pollDone := make(chan struct{})
+		stopPoll := make(chan struct{})
+		var stopPollOnce sync.Once
+		stopPollFn := func() { stopPollOnce.Do(func() { close(stopPoll) }) }
 		go func() {
-			pollResult, pollErr = pollReview(config.APIURL, config.APIKey, reviewID, opts.pollInterval, opts.timeout, verbose)
+			pollResult, pollErr = pollReview(config.APIURL, config.APIKey, reviewID, opts.pollInterval, opts.timeout, verbose, stopPoll)
 			close(pollDone)
 		}()
 
@@ -1142,6 +1154,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 		select {
 		case decisionCode = <-decisionChan:
 			stopCtrlSFn()
+			stopPollFn()
 		case <-pollDone:
 			pollFinished = true
 		}
@@ -1156,6 +1169,19 @@ func runReviewWithOptions(opts reviewOptions) error {
 			}
 			stopCtrlSFn()
 			if pollErr != nil {
+				if errors.Is(pollErr, errPollCancelled) {
+					if decisionCode != -1 {
+						return executeDecision(decisionCode, initialMsg, false, decisionExecutionContext{
+							precommit:          opts.precommit,
+							verbose:            verbose,
+							initialMsg:         initialMsg,
+							diffContent:        diffContent,
+							reviewID:           reviewID,
+							attestationWritten: &attestationWritten,
+						})
+					}
+					return nil
+				}
 				// If progressive loading is active, don't crash - let server keep running to show error
 				if progressiveLoadingActive {
 					fmt.Printf("\n⚠️  Review failed: %v\n", pollErr)
@@ -1293,6 +1319,9 @@ func runReviewWithOptions(opts reviewOptions) error {
 				fmt.Printf("   [Enter]  Continue with commit\n")
 				fmt.Printf("   [Ctrl-C] Abort commit\n")
 				fmt.Printf("   Or use the web UI buttons\n\n")
+				if strings.TrimSpace(initialMsg) != "" {
+					fmt.Printf("   Current commit message: %s\n\n", initialMsg)
+				}
 
 				// Set up terminal input handlers that call progressiveDecide
 				sigChan := make(chan os.Signal, 1)
@@ -1304,48 +1333,24 @@ func runReviewWithOptions(opts reviewOptions) error {
 					progressiveDecide(decisionAbort, "", false) // abort
 				}()
 
+				stopKeys := make(chan struct{})
+				defer close(stopKeys)
 				go func() {
-					stopKeys := make(chan struct{})
-					go func() {
+					for {
 						code, err := handleCtrlKeyWithCancel(stopKeys)
-						if err == nil && code != 0 {
-							progressiveDecide(code, "", false)
+						if err != nil || code == 0 {
+							fallbackCode, fallbackErr := handleEnterFallbackWithCancel(stopKeys)
+							if fallbackErr == nil && fallbackCode == decisionCommit {
+								progressiveDecide(decisionCommit, "", false)
+							}
+							return
 						}
-					}()
-
-					tty, err := openTTY()
-					if err != nil {
-						// Cannot open terminal (e.g. no console attached).
-						// Don't abort — let the web UI buttons be the decision source.
-						close(stopKeys)
+						if code == decisionSkip || code == decisionVouch {
+							continue
+						}
+						progressiveDecide(code, "", false)
 						return
 					}
-					defer tty.Close()
-					defer close(stopKeys)
-
-					// Prompt for commit message if empty
-					msg := initialMsg
-					if strings.TrimSpace(msg) == "" {
-						// Write prompt to stdout so user can see it
-						fmt.Print("Enter commit message: ")
-						os.Stdout.Sync()
-						reader := bufio.NewReader(tty)
-						input, err := reader.ReadString('\n')
-						if err != nil {
-							progressiveDecide(decisionAbort, "", false) // abort on read error
-							return
-						}
-						msg = strings.TrimSpace(input)
-					} else {
-						// Just wait for Enter if we have initial message
-						reader := bufio.NewReader(tty)
-						_, err := reader.ReadString('\n')
-						if err != nil {
-							progressiveDecide(decisionAbort, "", false) // abort on read error
-							return
-						}
-					}
-					progressiveDecide(decisionCommit, msg, false) // commit with entered/initial message
 				}()
 
 				// Wait for decision from either HTTP endpoint or terminal
@@ -1579,7 +1584,7 @@ func runCommitAndMaybePush(message string, push bool, verbose bool) error {
 		}
 
 		fmt.Printf("No upstream configured for %s. Creating upstream on origin...\n", branchName)
-		bootstrapPushCmd := exec.Command("git", "push", "-u", "origin", "HEAD")
+		bootstrapPushCmd := exec.Command("git", "push", "--no-progress", "-u", "origin", "HEAD")
 		bootstrapPushCmd.Stdout = os.Stdout
 		bootstrapPushCmd.Stderr = os.Stderr
 		if err := bootstrapPushCmd.Run(); err != nil {
@@ -1598,7 +1603,7 @@ func runCommitAndMaybePush(message string, push bool, verbose bool) error {
 	remote, branch := parts[0], parts[1]
 
 	fmt.Printf("Fetching %s...\n", remote)
-	fetchCmd := exec.Command("git", "fetch", "--prune", remote)
+	fetchCmd := exec.Command("git", "fetch", "--prune", "--no-progress", remote)
 	fetchCmd.Stdout = os.Stdout
 	fetchCmd.Stderr = os.Stderr
 	if err := fetchCmd.Run(); err != nil {
@@ -1619,7 +1624,7 @@ func runCommitAndMaybePush(message string, push bool, verbose bool) error {
 		log.Printf("Pushing HEAD to %s/%s", remote, branch)
 	}
 	fmt.Printf("Pushing to %s/%s...\n", remote, branch)
-	pushCmd := exec.Command("git", "push", remote, "HEAD:"+branch)
+	pushCmd := exec.Command("git", "push", "--no-progress", remote, "HEAD:"+branch)
 	pushCmd.Stdout = os.Stdout
 	pushCmd.Stderr = os.Stderr
 	if err := pushCmd.Run(); err != nil {
@@ -2022,12 +2027,13 @@ func trackCLIUsage(apiURL, apiKey string, verbose bool) {
 	}
 }
 
-func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Duration, verbose bool) (*diffReviewResponse, error) {
+var errPollCancelled = errors.New("poll cancelled")
+
+func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Duration, verbose bool, cancel <-chan struct{}) (*diffReviewResponse, error) {
 	endpoint := strings.TrimSuffix(apiURL, "/") + "/api/v1/diff-review/" + reviewID
 	deadline := time.Now().Add(timeout)
 	start := time.Now()
-	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	fmt.Printf("Waiting for review completion (poll every %s, timeout %s)...\n", pollInterval, timeout)
+	fmt.Printf("Waiting for review completion (poll every %s, timeout %s)...\r\n", pollInterval, timeout)
 	os.Stdout.Sync()
 
 	if verbose {
@@ -2035,6 +2041,14 @@ func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Dura
 	}
 
 	for time.Now().Before(deadline) {
+		select {
+		case <-cancel:
+			fmt.Printf("\r\n")
+			os.Stdout.Sync()
+			return nil, errPollCancelled
+		default:
+		}
+
 		req, err := http.NewRequest("GET", endpoint, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
@@ -2066,27 +2080,21 @@ func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Dura
 		}
 
 		statusLine := fmt.Sprintf("Status: %s | elapsed: %s", result.Status, time.Since(start).Truncate(time.Second))
-		if isTTY {
-			fmt.Printf("\r%-80s", statusLine)
-			os.Stdout.Sync() // Force flush for real-time updates and clear prior text
-		} else {
-			fmt.Println(statusLine)
-		}
+		fmt.Printf("\r%-80s", statusLine)
+		os.Stdout.Sync()
 		if verbose {
 			log.Printf("%s", statusLine)
 		}
 
 		if result.Status == "completed" {
-			if isTTY {
-				fmt.Printf("\r%-80s\n", statusLine)
-			}
+			fmt.Printf("\r%-80s\r\n", statusLine)
+			os.Stdout.Sync()
 			return &result, nil
 		}
 
 		if result.Status == "failed" {
-			if isTTY {
-				fmt.Printf("\r%-80s\n", statusLine)
-			}
+			fmt.Printf("\r%-80s\r\n", statusLine)
+			os.Stdout.Sync()
 			// Return the result with error info instead of just an error
 			// This allows progressive loading to display error details in the UI
 			reason := strings.TrimSpace(result.Message)
@@ -2097,7 +2105,11 @@ func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Dura
 			return &result, fmt.Errorf("review failed: %s", reason)
 		}
 
-		time.Sleep(pollInterval)
+		select {
+		case <-cancel:
+			return nil, errPollCancelled
+		case <-time.After(pollInterval):
+		}
 	}
 
 	fmt.Println()
@@ -2707,6 +2719,43 @@ func openTTY() (*os.File, error) {
 	return os.Open("/dev/tty")
 }
 
+// handleEnterFallbackWithCancel waits for a newline in cooked mode and maps it
+// to a commit decision. This is a fallback for terminals where raw key capture
+// cannot attach reliably.
+func handleEnterFallbackWithCancel(stop <-chan struct{}) (int, error) {
+	input := os.Stdin
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		tty, err := openTTY()
+		if err != nil {
+			return 0, err
+		}
+		defer tty.Close()
+		input = tty
+	}
+
+	reader := bufio.NewReader(input)
+	lineCh := make(chan struct{}, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		_, err := reader.ReadString('\n')
+		if err != nil {
+			errCh <- err
+			return
+		}
+		lineCh <- struct{}{}
+	}()
+
+	select {
+	case <-stop:
+		return 0, fmt.Errorf("cancelled")
+	case <-lineCh:
+		return decisionCommit, nil
+	case err := <-errCh:
+		return 0, err
+	}
+}
+
 // handleCtrlKeyWithCancel sets up raw terminal mode to detect Ctrl-S (skip), Ctrl-V (vouch), and Ctrl-C (abort).
 // Returns a decision code constant or 0 on cancellation/failure.
 // persistCommitMessage writes the desired commit message to a temporary file that the commit-msg hook will consume.
@@ -2889,6 +2938,16 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	mux.HandleFunc("/abort", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		decide(decisionAbort, "", false)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
 	// Start server in background using the already-open listener
 	server := &http.Server{
 		Handler: mux,
@@ -2921,57 +2980,34 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 
 	stopKeys := make(chan struct{})
 	go func() {
-		code, err := handleCtrlKeyWithCancel(stopKeys)
-		if err == nil && code != 0 {
+		for {
+			code, err := handleCtrlKeyWithCancel(stopKeys)
+			if err != nil || code == 0 {
+				fallbackCode, fallbackErr := handleEnterFallbackWithCancel(stopKeys)
+				if fallbackErr == nil && fallbackCode == decisionCommit {
+					decide(decisionCommit, "", false)
+				}
+				return
+			}
+			if code == decisionSkip || code == decisionVouch {
+				continue
+			}
 			decide(code, "", false)
+			return
 		}
 	}()
 
 	defer close(stopKeys)
 
-	// Read from terminal directly to avoid stdin issues in git hooks (Enter fallback, cooked mode)
-	go func() {
-		tty, err := openTTY()
-		if err != nil {
-			fmt.Println("Warning: Could not open terminal, auto-proceeding")
-			time.Sleep(2 * time.Second)
-			decide(decisionCommit, initialMsg, false)
-			return
-		}
-		defer tty.Close()
-
-		reader := bufio.NewReader(tty)
-
-		fmt.Printf("📋 Review complete. Choose action:\n")
-		fmt.Printf("   [Enter]  Continue with commit\n")
-		fmt.Printf("   [Ctrl-S] Skip review and commit\n")
-		fmt.Printf("   [Ctrl-V] Vouch and commit\n")
-		fmt.Printf("   [Ctrl-C] Abort commit\n")
-		fmt.Printf("\nOptional: type a new commit message and press Enter to use it (leave blank to keep Git's message).\n")
-		if strings.TrimSpace(initialMsg) != "" {
-			fmt.Printf("(current message): %s\n", initialMsg)
-		}
-		fmt.Printf("> ")
-		os.Stdout.Sync()
-
-		typedMessage, _ := reader.ReadString('\n')
-		typedMessage = strings.TrimRight(strings.TrimRight(typedMessage, "\n"), "\r")
-		if strings.TrimSpace(typedMessage) == "" {
-			typedMessage = initialMsg
-		}
-
-		fmt.Printf("\n[Enter] Continue with commit\n")
-		fmt.Printf("[Ctrl-C] Abort commit\n")
-		fmt.Printf("\nYour choice: ")
-		os.Stdout.Sync()
-
-		_, err = reader.ReadString('\n')
-		if err != nil {
-			decide(decisionCommit, typedMessage, false)
-			return
-		}
-		decide(decisionCommit, typedMessage, false)
-	}()
+	fmt.Printf("📋 Review complete. Choose action:\n")
+	fmt.Printf("   [Enter]  Continue with commit\n")
+	fmt.Printf("   [Ctrl-C] Abort commit\n")
+	fmt.Printf("   Or use the web UI buttons\n")
+	if strings.TrimSpace(initialMsg) != "" {
+		fmt.Printf("(current message): %s\n", initialMsg)
+	}
+	fmt.Println()
+	os.Stdout.Sync()
 
 	// Wait for any decision source
 	decision := <-decisionChan

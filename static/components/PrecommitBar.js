@@ -24,6 +24,7 @@ export async function createPrecommitBar() {
         const [status, setStatus] = useState('');
         const [disabled, setDisabled] = useState(false);
         const userHasTyped = useRef(!!(initialMsg && initialMsg.trim()));
+        const reviewCompleted = reviewStatus === 'completed';
         
         // Auto-fill commit message from AI summary title when review completes
         useEffect(() => {
@@ -97,25 +98,39 @@ export async function createPrecommitBar() {
                             </svg>
                             Commit & Push
                         </button>
+                    </div>
+                    <div class="precommit-actions" style="margin-top: 8px;">
+                        ${!reviewCompleted && html`
+                            <button 
+                                class="btn btn-ghost"
+                                disabled=${disabled}
+                                onClick=${() => postDecision('/skip', 'Skip requested', false)}
+                            >
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                Skip
+                            </button>
+                            <button 
+                                class="btn btn-ghost"
+                                disabled=${disabled}
+                                onClick=${() => postDecision('/vouch', 'Vouch requested', false)}
+                            >
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                                </svg>
+                                Vouch
+                            </button>
+                        `}
                         <button 
                             class="btn btn-ghost"
                             disabled=${disabled}
-                            onClick=${() => postDecision('/skip', 'Skip requested', false)}
+                            onClick=${() => postDecision('/abort', 'Abort requested', false)}
                         >
                             <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                             </svg>
-                            Skip
-                        </button>
-                        <button 
-                            class="btn btn-ghost"
-                            disabled=${disabled}
-                            onClick=${() => postDecision('/vouch', 'Vouch requested', false)}
-                        >
-                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                            </svg>
-                            Vouch
+                            Abort Commit
                         </button>
                     </div>
                     <div class="precommit-status">${status}</div>
@@ -132,7 +147,7 @@ export async function createPrecommitBar() {
                             userHasTyped.current = true;
                         }}
                     ></textarea>
-                    <div class="precommit-message-hint">Required for Commit/Commit & Push. Optional for Skip and Vouch.</div>
+                    <div class="precommit-message-hint">Required for Commit/Commit & Push. Optional for Skip/Vouch. Ignored on Abort.</div>
                 </div>
             </div>
         `;

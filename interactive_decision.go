@@ -39,9 +39,6 @@ func executeDecision(code int, message string, push bool, ctx decisionExecutionC
 		if finalMsg == "" {
 			finalMsg = strings.TrimSpace(ctx.initialMsg)
 		}
-		if finalMsg == "" {
-			return fmt.Errorf("commit message is required for commit/commit+push")
-		}
 		if ctx.precommit {
 			return cli.Exit("", decisionCommit)
 		}

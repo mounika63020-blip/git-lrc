@@ -36,6 +36,9 @@ func handleCtrlKeyWithCancel(stop <-chan struct{}) (int, error) {
 				return
 			}
 			switch buf[0] {
+			case '\r', '\n': // Enter
+				codeChan <- decisionCommit
+				return
 			case ctrlCKey: // Ctrl-C (ETX)
 				codeChan <- decisionAbort
 				return
