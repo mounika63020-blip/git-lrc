@@ -1,4 +1,4 @@
-package main
+package selfupdate
 
 import (
 	"bytes"
@@ -23,6 +23,19 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/urfave/cli/v2"
+)
+
+// version is injected by main at startup so update checks compare against the
+// exact runtime build version (including ldflags overrides).
+var version = "unknown"
+
+const (
+	b2KeyID      = "REDACTED_B2_KEY_ID"
+	b2AppKey     = "REDACTED_B2_APP_KEY"
+	b2BucketName = "hexmos"
+	b2BucketID   = "33d6ab74ac456875919a0f1d"
+	b2Prefix     = "lrc"
+	b2AuthURL    = "https://api.backblazeb2.com/b2api/v2/b2_authorize_account"
 )
 
 // =============================================================================
@@ -1004,4 +1017,23 @@ func runSelfUpdate(c *cli.Context) error {
 
 	fmt.Printf("\n%s✓ Update complete! Run 'lrc version' to verify.%s\n", colorGreen, colorReset)
 	return nil
+}
+
+func SetVersion(v string) {
+	version = strings.TrimSpace(v)
+	if version == "" {
+		version = "unknown"
+	}
+}
+
+func ApplyPendingUpdateIfAny(verbose bool) error {
+	return applyPendingUpdateIfAny(verbose)
+}
+
+func StartAutoUpdateCheck(verbose bool) {
+	startAutoUpdateCheck(verbose)
+}
+
+func RunSelfUpdate(c *cli.Context) error {
+	return runSelfUpdate(c)
 }

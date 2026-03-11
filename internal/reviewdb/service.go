@@ -1,4 +1,4 @@
-package main
+package reviewdb
 
 import (
 	"database/sql"
@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/HexmosTech/git-lrc/attestation"
+	"github.com/HexmosTech/git-lrc/internal/reviewapi"
+	"github.com/HexmosTech/git-lrc/internal/reviewmodel"
 )
 
 type reviewSession = attestation.ReviewSession
@@ -26,6 +28,14 @@ CREATE TABLE IF NOT EXISTS review_sessions (
 CREATE INDEX IF NOT EXISTS idx_review_sessions_branch ON review_sessions(branch);
 CREATE INDEX IF NOT EXISTS idx_review_sessions_tree ON review_sessions(tree_hash);
 `
+
+func resolveGitDir() (string, error) {
+	return reviewapi.ResolveGitDir()
+}
+
+func currentTreeHash() (string, error) {
+	return reviewapi.CurrentTreeHash()
+}
 
 // reviewDBPath returns the path to the review database under .git/lrc/.
 func reviewDBPath() (string, error) {
@@ -48,7 +58,7 @@ func currentBranch() string {
 
 // filesToEntries converts parsed diff file results to slim attestation entries
 // (strips Content from hunks to keep DB rows small).
-func filesToEntries(files []diffReviewFileResult) []attestationFileEntry {
+func filesToEntries(files []reviewmodel.DiffReviewFileResult) []attestationFileEntry {
 	entries := make([]attestationFileEntry, len(files))
 	for i, f := range files {
 		hunks := make([]attestationHunkRange, len(f.Hunks))
@@ -111,7 +121,7 @@ func computePriorCoverage(db *sql.DB, branch, currentTreeHash string, currentFil
 // recordAndComputeCoverage is a convenience function that opens the DB,
 // records the session, computes coverage, and returns the result.
 // It is the main entry point for all review actions (reviewed/skipped/vouched).
-func recordAndComputeCoverage(action string, parsedFiles []diffReviewFileResult, reviewID string, verbose bool) (coverageResult, error) {
+func RecordAndComputeCoverage(action string, parsedFiles []reviewmodel.DiffReviewFileResult, reviewID string, verbose bool) (coverageResult, error) {
 	db, err := openReviewDB()
 	if err != nil {
 		if verbose {
@@ -155,7 +165,7 @@ func recordAndComputeCoverage(action string, parsedFiles []diffReviewFileResult,
 
 // runReviewDBCleanup deletes all review sessions for the current branch.
 // Called from the post-commit hook via "lrc review-cleanup".
-func runReviewDBCleanup(verbose bool) error {
+func RunReviewDBCleanup(verbose bool) error {
 	db, err := openReviewDB()
 	if err != nil {
 		if verbose {

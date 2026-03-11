@@ -1,4 +1,4 @@
-package main
+package reviewapi
 
 import (
 	"archive/zip"
@@ -14,9 +14,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/HexmosTech/git-lrc/internal/reviewmodel"
 )
 
-func runGitCommand(args ...string) ([]byte, error) {
+func RunGitCommand(args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	output, err := cmd.Output()
 	if err != nil {
@@ -28,8 +30,8 @@ func runGitCommand(args ...string) ([]byte, error) {
 	return output, nil
 }
 
-func currentTreeHash() (string, error) {
-	out, err := runGitCommand("write-tree")
+func CurrentTreeHash() (string, error) {
+	out, err := RunGitCommand("write-tree")
 	if err != nil {
 		return "", err
 	}
@@ -37,7 +39,7 @@ func currentTreeHash() (string, error) {
 }
 
 // resolveGitDir returns the absolute path to the repository's .git directory.
-func resolveGitDir() (string, error) {
+func ResolveGitDir() (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
 	out, err := cmd.Output()
 	if err != nil {
@@ -61,7 +63,7 @@ func resolveGitDir() (string, error) {
 	return filepath.Join(cwd, gitDir), nil
 }
 
-func createZipArchive(diffContent []byte) ([]byte, error) {
+func CreateZipArchive(diffContent []byte) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	zipWriter := zip.NewWriter(buf)
 
@@ -101,22 +103,22 @@ func formatJSONParseError(body []byte, contentType string, parseErr error) error
 		parseErr, contentType, preview)
 }
 
-func submitReview(apiURL, apiKey, base64Diff, repoName string, verbose bool) (diffReviewCreateResponse, error) {
+func SubmitReview(apiURL, apiKey, base64Diff, repoName string, verbose bool) (reviewmodel.DiffReviewCreateResponse, error) {
 	endpoint := strings.TrimSuffix(apiURL, "/") + "/api/v1/diff-review"
 
-	payload := diffReviewRequest{
+	payload := reviewmodel.DiffReviewRequest{
 		DiffZipBase64: base64Diff,
 		RepoName:      repoName,
 	}
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return diffReviewCreateResponse{}, fmt.Errorf("failed to marshal request: %w", err)
+		return reviewmodel.DiffReviewCreateResponse{}, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return diffReviewCreateResponse{}, fmt.Errorf("failed to create request: %w", err)
+		return reviewmodel.DiffReviewCreateResponse{}, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -129,28 +131,28 @@ func submitReview(apiURL, apiKey, base64Diff, repoName string, verbose bool) (di
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return diffReviewCreateResponse{}, fmt.Errorf("failed to send request: %w", err)
+		return reviewmodel.DiffReviewCreateResponse{}, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return diffReviewCreateResponse{}, fmt.Errorf("failed to read response: %w", err)
+		return reviewmodel.DiffReviewCreateResponse{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	contentType := resp.Header.Get("Content-Type")
 
 	if resp.StatusCode != http.StatusOK {
-		return diffReviewCreateResponse{}, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+		return reviewmodel.DiffReviewCreateResponse{}, &reviewmodel.APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
-	var result diffReviewCreateResponse
+	var result reviewmodel.DiffReviewCreateResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return diffReviewCreateResponse{}, formatJSONParseError(body, contentType, err)
+		return reviewmodel.DiffReviewCreateResponse{}, formatJSONParseError(body, contentType, err)
 	}
 
 	if result.ReviewID == "" {
-		return diffReviewCreateResponse{}, fmt.Errorf("review_id not found in response")
+		return reviewmodel.DiffReviewCreateResponse{}, fmt.Errorf("review_id not found in response")
 	}
 
 	return result, nil
@@ -158,7 +160,7 @@ func submitReview(apiURL, apiKey, base64Diff, repoName string, verbose bool) (di
 
 // trackCLIUsage sends a telemetry ping to the backend to track CLI usage
 // This is a best-effort call and failures are silently ignored
-func trackCLIUsage(apiURL, apiKey string, verbose bool) {
+func TrackCLIUsage(apiURL, apiKey string, verbose bool) {
 	endpoint := strings.TrimSuffix(apiURL, "/") + "/api/v1/diff-review/cli-used"
 
 	req, err := http.NewRequest("POST", endpoint, nil)
@@ -186,10 +188,10 @@ func trackCLIUsage(apiURL, apiKey string, verbose bool) {
 	}
 }
 
-var errPollCancelled = errors.New("poll cancelled")
-var errInputCancelled = errors.New("terminal input cancelled")
+var ErrPollCancelled = errors.New("poll cancelled")
+var ErrInputCancelled = errors.New("terminal input cancelled")
 
-func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Duration, verbose bool, cancel <-chan struct{}) (*diffReviewResponse, error) {
+func PollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Duration, verbose bool, cancel <-chan struct{}) (*reviewmodel.DiffReviewResponse, error) {
 	endpoint := strings.TrimSuffix(apiURL, "/") + "/api/v1/diff-review/" + reviewID
 	deadline := time.Now().Add(timeout)
 	start := time.Now()
@@ -205,7 +207,7 @@ func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Dura
 		case <-cancel:
 			fmt.Printf("\r\n")
 			os.Stdout.Sync()
-			return nil, errPollCancelled
+			return nil, ErrPollCancelled
 		default:
 		}
 
@@ -234,7 +236,7 @@ func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Dura
 			return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 		}
 
-		var result diffReviewResponse
+		var result reviewmodel.DiffReviewResponse
 		if err := json.Unmarshal(body, &result); err != nil {
 			return nil, formatJSONParseError(body, contentType, err)
 		}
@@ -265,7 +267,7 @@ func pollReview(apiURL, apiKey, reviewID string, pollInterval, timeout time.Dura
 
 		select {
 		case <-cancel:
-			return nil, errPollCancelled
+			return nil, ErrPollCancelled
 		case <-time.After(pollInterval):
 		}
 	}

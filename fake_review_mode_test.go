@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/HexmosTech/git-lrc/internal/reviewapi"
 )
 
 func TestIsFakeReviewBuild(t *testing.T) {
@@ -107,7 +109,7 @@ func TestPollReviewFakeCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected cancellation error")
 	}
-	if err != errPollCancelled {
-		t.Fatalf("error = %v, want %v", err, errPollCancelled)
+	if err != reviewapi.ErrPollCancelled {
+		t.Fatalf("error = %v, want %v", err, reviewapi.ErrPollCancelled)
 	}
 }

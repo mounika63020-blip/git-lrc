@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/HexmosTech/git-lrc/internal/reviewapi"
+	"github.com/HexmosTech/git-lrc/internal/reviewdb"
 	"github.com/urfave/cli/v2"
 )
 
@@ -31,7 +33,7 @@ func recordCoverageAndAttest(action string, diffContent []byte, reviewID string,
 	if parseErr != nil {
 		return fmt.Errorf("could not parse diff for coverage tracking: %w", parseErr)
 	}
-	cov, covErr := recordAndComputeCoverage(action, parsedFiles, reviewID, verbose)
+	cov, covErr := reviewdb.RecordAndComputeCoverage(action, parsedFiles, reviewID, verbose)
 	if covErr != nil {
 		return fmt.Errorf("coverage computation failed: %w", covErr)
 	}
@@ -70,7 +72,7 @@ func ensureAttestationFull(payload attestationPayload, verbose bool, written *bo
 
 // existingAttestationAction returns the attestation action for the current tree, if present.
 func existingAttestationAction() (string, error) {
-	treeHash, err := currentTreeHash()
+	treeHash, err := reviewapi.CurrentTreeHash()
 	if err != nil {
 		return "", err
 	}
@@ -78,7 +80,7 @@ func existingAttestationAction() (string, error) {
 		return "", nil
 	}
 
-	gitDir, err := resolveGitDir()
+	gitDir, err := reviewapi.ResolveGitDir()
 	if err != nil {
 		return "", err
 	}
@@ -99,7 +101,7 @@ func existingAttestationAction() (string, error) {
 
 // readCurrentAttestation reads and parses the full attestation payload for the current tree.
 func readCurrentAttestation() (*attestationPayload, error) {
-	treeHash, err := currentTreeHash()
+	treeHash, err := reviewapi.CurrentTreeHash()
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +109,7 @@ func readCurrentAttestation() (*attestationPayload, error) {
 		return nil, nil
 	}
 
-	gitDir, err := resolveGitDir()
+	gitDir, err := reviewapi.ResolveGitDir()
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +170,7 @@ func writeAttestationFullForCurrentTree(payload attestationPayload) (string, err
 		return "", fmt.Errorf("attestation action cannot be empty")
 	}
 
-	treeHash, err := currentTreeHash()
+	treeHash, err := reviewapi.CurrentTreeHash()
 	if err != nil {
 		return "", fmt.Errorf("failed to compute tree hash: %w", err)
 	}
@@ -176,7 +178,7 @@ func writeAttestationFullForCurrentTree(payload attestationPayload) (string, err
 		return "", fmt.Errorf("empty tree hash")
 	}
 
-	gitDir, err := resolveGitDir()
+	gitDir, err := reviewapi.ResolveGitDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve git dir: %w", err)
 	}
@@ -220,7 +222,7 @@ func writeAttestationFullForCurrentTree(payload attestationPayload) (string, err
 }
 
 func deleteAttestationForCurrentTree() error {
-	treeHash, err := currentTreeHash()
+	treeHash, err := reviewapi.CurrentTreeHash()
 	if err != nil {
 		return fmt.Errorf("failed to compute tree hash: %w", err)
 	}
@@ -228,7 +230,7 @@ func deleteAttestationForCurrentTree() error {
 		return nil
 	}
 
-	gitDir, err := resolveGitDir()
+	gitDir, err := reviewapi.ResolveGitDir()
 	if err != nil {
 		return fmt.Errorf("failed to resolve git dir: %w", err)
 	}

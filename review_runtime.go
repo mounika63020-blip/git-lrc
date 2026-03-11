@@ -23,7 +23,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/HexmosTech/git-lrc/attestation"
 	"github.com/HexmosTech/git-lrc/interactive/input"
+	"github.com/HexmosTech/git-lrc/internal/ctrlkey"
+	"github.com/HexmosTech/git-lrc/internal/decisionflow"
+	"github.com/HexmosTech/git-lrc/internal/reviewapi"
+	"github.com/HexmosTech/git-lrc/internal/reviewdb"
+	"github.com/HexmosTech/git-lrc/internal/reviewhtml"
+	"github.com/HexmosTech/git-lrc/internal/reviewmodel"
+	"github.com/HexmosTech/git-lrc/internal/reviewopts"
+	"github.com/HexmosTech/git-lrc/internal/selfupdate"
+	"github.com/HexmosTech/git-lrc/internal/staticserve"
 	"github.com/knadh/koanf/parsers/toml"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
@@ -31,10 +41,10 @@ import (
 	"golang.org/x/term"
 )
 
-func runReviewWithOptions(opts reviewOptions) error {
-	verbose := opts.verbose
+func runReviewWithOptions(opts reviewopts.Options) error {
+	verbose := opts.Verbose
 	defer func() {
-		if err := applyPendingUpdateIfAny(verbose); err != nil && verbose {
+		if err := selfupdate.ApplyPendingUpdateIfAny(verbose); err != nil && verbose {
 			log.Printf("pending self-update apply failed: %v", err)
 		}
 	}()
@@ -43,22 +53,22 @@ func runReviewWithOptions(opts reviewOptions) error {
 	var commitMsgPath string
 	attestationAction := ""
 	attestationWritten := false
-	initialMsg := sanitizeInitialMessage(opts.initialMsg)
+	initialMsg := sanitizeInitialMessage(opts.InitialMsg)
 
 	// Determine if this is a post-commit review (reviewing already-committed code, read-only)
 	// vs a pre-commit review (reviewing staged changes before commit, can commit from UI)
 	// When --commit flag is used, we're always reviewing historical commits (read-only mode)
-	isPostCommitReview := opts.diffSource == "commit"
+	isPostCommitReview := opts.DiffSource == "commit"
 
 	// Interactive flow (Web UI with commit actions) is the default when --serve is enabled
 	// BUT: disable interactive actions when reviewing historical commits (isPostCommitReview)
 	// Skip interactive mode if explicitly using --skip, not serving, or reviewing history
-	useInteractive := !opts.skip && opts.serve && !isPostCommitReview
+	useInteractive := !opts.Skip && opts.Serve && !isPostCommitReview
 
 	// Short-circuit skip: collect diff for coverage tracking, write attestation, exit
-	if opts.skip {
+	if opts.Skip {
 		attestationAction = "skipped"
-		var cov coverageResult
+		var cov attestation.CoverageResult
 		// Collect diff to record in DB for coverage tracking (best-effort)
 		diffContent, diffErr := collectDiffWithOptions(opts)
 		if diffErr != nil {
@@ -69,7 +79,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 				fmt.Fprintf(os.Stderr, "Warning: could not parse diff for coverage tracking: %v\n", parseErr)
 			} else {
 				var covErr error
-				cov, covErr = recordAndComputeCoverage("skipped", parsedFiles, "", verbose)
+				cov, covErr = reviewdb.RecordAndComputeCoverage("skipped", parsedFiles, "", verbose)
 				if covErr != nil {
 					fmt.Fprintf(os.Stderr, "Warning: coverage computation failed: %v\n", covErr)
 				}
@@ -95,7 +105,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 	}
 
 	// Short-circuit vouch: collect diff, compute coverage, write attestation, exit
-	if opts.vouch {
+	if opts.Vouch {
 		attestationAction = "vouched"
 		diffContent, diffErr := collectDiffWithOptions(opts)
 		if diffErr != nil {
@@ -108,7 +118,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 		if parseErr != nil {
 			return fmt.Errorf("failed to parse diff for vouch: %w", parseErr)
 		}
-		cov, _ := recordAndComputeCoverage("vouched", parsedFiles, "", verbose)
+		cov, _ := reviewdb.RecordAndComputeCoverage("vouched", parsedFiles, "", verbose)
 		if cov.Iterations == 0 {
 			cov.Iterations = 1
 		}
@@ -128,8 +138,8 @@ func runReviewWithOptions(opts reviewOptions) error {
 		return nil
 	}
 
-	if opts.precommit {
-		gitDir, err := resolveGitDir()
+	if opts.Precommit {
+		gitDir, err := reviewapi.ResolveGitDir()
 		if err != nil {
 			return fmt.Errorf("precommit mode requires a git repository: %w", err)
 		}
@@ -140,7 +150,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 	// Handle --force: delete existing attestation if present
 	// Skip attestation logic for post-commit reviews
 	if !isPostCommitReview {
-		if opts.force {
+		if opts.Force {
 			if existing, err := existingAttestationAction(); err == nil && existing != "" {
 				if err := deleteAttestationForCurrentTree(); err != nil {
 					if verbose {
@@ -165,22 +175,22 @@ func runReviewWithOptions(opts reviewOptions) error {
 	// Fake mode does not require API credentials.
 	var config *Config
 	if fakeMode {
-		config = &Config{APIURL: defaultAPIURL, APIKey: ""}
-		if strings.TrimSpace(opts.apiURL) != "" {
-			config.APIURL = opts.apiURL
+		config = &Config{APIURL: reviewopts.DefaultAPIURL, APIKey: ""}
+		if strings.TrimSpace(opts.APIURL) != "" {
+			config.APIURL = opts.APIURL
 		}
 		if verbose {
 			log.Printf("Fake review mode enabled (reviewMode=%s)", reviewMode)
 		}
 	} else {
-		config, err = loadConfigValues(opts.apiKey, opts.apiURL, verbose)
+		config, err = loadConfigValues(opts.APIKey, opts.APIURL, verbose)
 		if err != nil {
 			return err
 		}
 	}
 
 	// Determine repo name
-	repoName := opts.repoName
+	repoName := opts.RepoName
 	if repoName == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -194,7 +204,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 		log.Printf("API URL: %s", config.APIURL)
 	}
 
-	var result *diffReviewResponse
+	var result *reviewmodel.DiffReviewResponse
 
 	// Collect diff
 	diffContent, err := collectDiffWithOptions(opts)
@@ -211,7 +221,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 	}
 
 	// Create ZIP archive
-	zipData, err := createZipArchive(diffContent)
+	zipData, err := reviewapi.CreateZipArchive(diffContent)
 	if err != nil {
 		return fmt.Errorf("failed to create zip archive: %w", err)
 	}
@@ -224,22 +234,22 @@ func runReviewWithOptions(opts reviewOptions) error {
 	base64Diff := base64.StdEncoding.EncodeToString(zipData)
 
 	// Save bundle if requested
-	if bundlePath := opts.saveBundle; bundlePath != "" {
+	if bundlePath := opts.SaveBundle; bundlePath != "" {
 		if err := saveBundleForInspection(bundlePath, diffContent, zipData, base64Diff, verbose); err != nil {
 			return fmt.Errorf("failed to save bundle: %w", err)
 		}
 	}
 
 	// Submit review
-	var submitResp diffReviewCreateResponse
+	var submitResp reviewmodel.DiffReviewCreateResponse
 	if fakeMode {
 		submitResp = buildFakeSubmitResponse()
 	} else {
-		submitResp, err = submitReview(config.APIURL, config.APIKey, base64Diff, repoName, verbose)
+		submitResp, err = reviewapi.SubmitReview(config.APIURL, config.APIKey, base64Diff, repoName, verbose)
 	}
 	if err != nil {
 		// Handle 413 Request Entity Too Large - prompt user to skip if interactive
-		var apiErr *APIError
+		var apiErr *reviewmodel.APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusRequestEntityTooLarge {
 			isInteractive := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 			if isInteractive {
@@ -285,7 +295,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 	var progressiveDecisionChan chan progressiveDecision
 	var progressiveDecide func(code int, message string, push bool)
 	var progressiveDecideOnce sync.Once
-	currentPhase := phaseReviewRunning
+	currentPhase := decisionflow.PhaseReviewRunning
 	var currentPhaseMu sync.RWMutex
 
 	fmt.Printf("Review submitted, ID: %s\n", reviewID)
@@ -300,7 +310,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 	}
 
 	// In precommit mode, ensure unbuffered output
-	if opts.precommit {
+	if opts.Precommit {
 		// Force flush and set unbuffered
 		os.Stdout.Sync()
 		os.Stderr.Sync()
@@ -308,9 +318,9 @@ func runReviewWithOptions(opts reviewOptions) error {
 
 	// Track CLI usage (best-effort, non-blocking)
 	if !fakeMode {
-		go trackCLIUsage(config.APIURL, config.APIKey, verbose)
+		go reviewapi.TrackCLIUsage(config.APIURL, config.APIKey, verbose)
 	}
-	startAutoUpdateCheck(verbose)
+	selfupdate.StartAutoUpdateCheck(verbose)
 
 	var fakeWait time.Duration
 	if fakeMode {
@@ -322,17 +332,17 @@ func runReviewWithOptions(opts reviewOptions) error {
 
 	// Generate and serve skeleton HTML immediately if --serve is enabled
 	// Auto-enable serve when no HTML path specified and not in post-commit mode
-	autoServeEnabled := !opts.serve && opts.saveHTML == "" && !isPostCommitReview
+	autoServeEnabled := !opts.Serve && opts.SaveHTML == "" && !isPostCommitReview
 	if autoServeEnabled {
-		opts.serve = true
+		opts.Serve = true
 	}
 
-	// Recalculate useInteractive now that opts.serve may have been auto-enabled
+	// Recalculate useInteractive now that opts.Serve may have been auto-enabled
 	// This is critical for Case 1 (hook-based terminal invocation) where serve is auto-enabled
 	// and we need the interactive flow with commit/push/skip options
-	useInteractive = !opts.skip && opts.serve && !isPostCommitReview
+	useInteractive = !opts.Skip && opts.Serve && !isPostCommitReview
 
-	if opts.serve {
+	if opts.Serve {
 		// Parse the diff content to generate file structures for immediate display
 		filesFromDiff, parseErr := parseDiffToFiles(diffContent)
 		if parseErr != nil && verbose {
@@ -345,16 +355,16 @@ func runReviewWithOptions(opts reviewOptions) error {
 		reviewStateMu.Unlock()
 
 		// Start serving immediately in background
-		serveListener, selectedPort, err := pickServePort(opts.port, 10)
+		serveListener, selectedPort, err := pickServePort(opts.Port, 10)
 		if err != nil {
 			return fmt.Errorf("failed to find available port: %w", err)
 		}
-		if selectedPort != opts.port {
-			fmt.Printf("Port %d is busy; serving on %d instead.\n", opts.port, selectedPort)
-			opts.port = selectedPort
+		if selectedPort != opts.Port {
+			fmt.Printf("Port %d is busy; serving on %d instead.\n", opts.Port, selectedPort)
+			opts.Port = selectedPort
 		}
 
-		serveURL := fmt.Sprintf("http://localhost:%d", opts.port)
+		serveURL := fmt.Sprintf("http://localhost:%d", opts.Port)
 		fmt.Printf("\n🌐 Review available at: %s\n", highlightURL(serveURL))
 		fmt.Printf("   Comments will appear progressively as review runs\n\n")
 
@@ -376,13 +386,13 @@ func runReviewWithOptions(opts reviewOptions) error {
 			phase := currentPhase
 			currentPhaseMu.RUnlock()
 
-			if err := validateInteractiveDecisionRequest(code, message, phase); err != nil {
-				reqErr, ok := err.(*decisionRequestError)
+			if err := decisionflow.ValidateRequest(code, message, phase); err != nil {
+				reqErr, ok := err.(*decisionflow.RequestError)
 				if !ok {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
-				http.Error(w, reqErr.message, reqErr.status)
+				http.Error(w, reqErr.Error(), reqErr.StatusCode())
 				return
 			}
 
@@ -395,7 +405,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 		go func() {
 			mux := http.NewServeMux()
 			// Serve static assets (JS, CSS) from embedded filesystem
-			mux.Handle("/static/", http.StripPrefix("/static/", getStaticHandler()))
+			mux.Handle("/static/", http.StripPrefix("/static/", staticserve.GetStaticHandler()))
 
 			// Serve index.html from embedded filesystem (no file on disk needed)
 			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -404,7 +414,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 					return
 				}
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				htmlBytes, err := staticFiles.ReadFile("static/index.html")
+				htmlBytes, err := staticserve.ReadFile("index.html")
 				if err != nil {
 					http.Error(w, "Failed to load page", http.StatusInternalServerError)
 					return
@@ -434,7 +444,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 					return
 				}
 				msg := readCommitMessageFromRequest(r)
-				handleProgressiveDecision(w, decisionCommit, msg, false)
+				handleProgressiveDecision(w, decisionflow.DecisionCommit, msg, false)
 			})
 			mux.HandleFunc("/commit-push", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -442,7 +452,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 					return
 				}
 				msg := readCommitMessageFromRequest(r)
-				handleProgressiveDecision(w, decisionCommit, msg, true)
+				handleProgressiveDecision(w, decisionflow.DecisionCommit, msg, true)
 			})
 			mux.HandleFunc("/skip", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -450,7 +460,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 					return
 				}
 				msg := readCommitMessageFromRequest(r)
-				handleProgressiveDecision(w, decisionSkip, msg, false)
+				handleProgressiveDecision(w, decisionflow.DecisionSkip, msg, false)
 			})
 			mux.HandleFunc("/vouch", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -458,14 +468,14 @@ func runReviewWithOptions(opts reviewOptions) error {
 					return
 				}
 				msg := readCommitMessageFromRequest(r)
-				handleProgressiveDecision(w, decisionVouch, msg, false)
+				handleProgressiveDecision(w, decisionflow.DecisionVouch, msg, false)
 			})
 			mux.HandleFunc("/abort", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					w.WriteHeader(http.StatusMethodNotAllowed)
 					return
 				}
-				handleProgressiveDecision(w, decisionAbort, "", false)
+				handleProgressiveDecision(w, decisionflow.DecisionAbort, "", false)
 			})
 			// Proxy endpoint for review-events API to avoid CORS
 			mux.HandleFunc("/api/v1/diff-review/", func(w http.ResponseWriter, r *http.Request) {
@@ -539,18 +549,18 @@ func runReviewWithOptions(opts reviewOptions) error {
 	if isPostCommitReview {
 		var pollErr error
 		if fakeMode {
-			result, pollErr = pollReviewFake(reviewID, opts.pollInterval, fakeWait, verbose, nil)
+			result, pollErr = pollReviewFake(reviewID, opts.PollInterval, fakeWait, verbose, nil)
 		} else {
-			result, pollErr = pollReview(config.APIURL, config.APIKey, reviewID, opts.pollInterval, opts.timeout, verbose, nil)
+			result, pollErr = reviewapi.PollReview(config.APIURL, config.APIKey, reviewID, opts.PollInterval, opts.Timeout, verbose, nil)
 		}
 		if pollErr != nil {
 			// If progressive loading is active, don't crash - keep server running to show error
 			if progressiveLoadingActive {
 				fmt.Printf("\n⚠️  Review failed: %v\n", pollErr)
-				fmt.Printf("   Error details available in browser at: http://localhost:%d\n", opts.port)
+				fmt.Printf("   Error details available in browser at: http://localhost:%d\n", opts.Port)
 				fmt.Printf("   Press Ctrl-C to exit\n\n")
 				// Create result with error so HTML can display it
-				result = &diffReviewResponse{
+				result = &reviewmodel.DiffReviewResponse{
 					Status:  "failed",
 					Summary: fmt.Sprintf("Review failed: %v", pollErr),
 					Message: pollErr.Error(),
@@ -593,12 +603,12 @@ func runReviewWithOptions(opts reviewOptions) error {
 		// Ctrl-C -> abort commit
 		go func() {
 			<-sigChan
-			decisionChan <- decisionAbort
+			decisionChan <- decisionflow.DecisionAbort
 		}()
 
 		// Ctrl-S -> skip review but still commit; Ctrl-C captured in raw mode fallback
 		go func() {
-			code, err := handleCtrlKeyWithCancel(stopCtrlS, false)
+			code, err := ctrlkey.HandleWithCancel(stopCtrlS, false)
 			if err == nil && code != 0 {
 				decisionChan <- code
 			}
@@ -608,7 +618,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 		syncedPrintln("")
 
 		// Poll concurrently and race with decisions
-		var pollResult *diffReviewResponse
+		var pollResult *reviewmodel.DiffReviewResponse
 		var pollErr error
 		pollDone := make(chan struct{})
 		stopPoll := make(chan struct{})
@@ -616,9 +626,9 @@ func runReviewWithOptions(opts reviewOptions) error {
 		stopPollFn := func() { stopPollOnce.Do(func() { close(stopPoll) }) }
 		go func() {
 			if fakeMode {
-				pollResult, pollErr = pollReviewFake(reviewID, opts.pollInterval, fakeWait, verbose, stopPoll)
+				pollResult, pollErr = pollReviewFake(reviewID, opts.PollInterval, fakeWait, verbose, stopPoll)
 			} else {
-				pollResult, pollErr = pollReview(config.APIURL, config.APIKey, reviewID, opts.pollInterval, opts.timeout, verbose, stopPoll)
+				pollResult, pollErr = reviewapi.PollReview(config.APIURL, config.APIKey, reviewID, opts.PollInterval, opts.Timeout, verbose, stopPoll)
 			}
 			close(pollDone)
 		}()
@@ -635,7 +645,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 		if pollFinished {
 			if progressiveLoadingActive {
 				currentPhaseMu.Lock()
-				currentPhase = phaseReviewComplete
+				currentPhase = decisionflow.PhaseReviewComplete
 				currentPhaseMu.Unlock()
 			}
 			// Prefer a user decision if it arrives within a short grace window after poll finishes
@@ -647,10 +657,10 @@ func runReviewWithOptions(opts reviewOptions) error {
 			}
 			stopCtrlSFn()
 			if pollErr != nil {
-				if errors.Is(pollErr, errPollCancelled) {
+				if errors.Is(pollErr, reviewapi.ErrPollCancelled) {
 					if decisionCode != -1 {
 						return executeDecision(decisionCode, initialMsg, false, decisionExecutionContext{
-							precommit:          opts.precommit,
+							precommit:          opts.Precommit,
 							verbose:            verbose,
 							initialMsg:         initialMsg,
 							commitMsgPath:      commitMsgPath,
@@ -664,9 +674,9 @@ func runReviewWithOptions(opts reviewOptions) error {
 				// If progressive loading is active, don't crash - let server keep running to show error
 				if progressiveLoadingActive {
 					syncedPrintf("\n⚠️  Review failed: %v\n", pollErr)
-					syncedPrintf("   Error details available in browser at: http://localhost:%d\n\n", opts.port)
+					syncedPrintf("   Error details available in browser at: http://localhost:%d\n\n", opts.Port)
 					// Create empty result - error will be delivered via completion event, not in Summary
-					result = &diffReviewResponse{
+					result = &reviewmodel.DiffReviewResponse{
 						Status:  "failed",
 						Summary: "",
 						Message: pollErr.Error(),
@@ -701,7 +711,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 		// If a decision happened before we proceed, act now
 		if decisionCode != -1 {
 			return executeDecision(decisionCode, initialMsg, false, decisionExecutionContext{
-				precommit:          opts.precommit,
+				precommit:          opts.Precommit,
 				verbose:            verbose,
 				initialMsg:         initialMsg,
 				commitMsgPath:      commitMsgPath,
@@ -714,7 +724,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 
 	// Apply default HTML serve for interactive/non-post-commit reviews
 	if !isPostCommitReview {
-		autoHTMLPath, err := applyDefaultHTMLServe(&opts)
+		autoHTMLPath, err := reviewopts.ApplyDefaultHTMLServe(&opts)
 		if err != nil {
 			return err
 		}
@@ -735,14 +745,14 @@ func runReviewWithOptions(opts reviewOptions) error {
 	}
 
 	// Save JSON response if requested
-	if jsonPath := opts.saveJSON; jsonPath != "" {
+	if jsonPath := opts.SaveJSON; jsonPath != "" {
 		if err := saveJSONResponse(jsonPath, result, verbose); err != nil {
 			return fmt.Errorf("failed to save JSON response: %w", err)
 		}
 	}
 
 	// Save formatted text output if requested
-	if textPath := opts.saveText; textPath != "" {
+	if textPath := opts.SaveText; textPath != "" {
 		if err := saveTextOutput(textPath, result, verbose); err != nil {
 			return fmt.Errorf("failed to save text output: %w", err)
 		}
@@ -751,7 +761,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 	// Save HTML output if requested
 	// Skip if progressive loading is active - the browser already has the skeleton HTML
 	// and will receive error/completion via the events API
-	if htmlPath := opts.saveHTML; htmlPath != "" && !progressiveLoadingActive {
+	if htmlPath := opts.SaveHTML; htmlPath != "" && !progressiveLoadingActive {
 		if err := saveHTMLOutput(htmlPath, result, verbose, useInteractive, isPostCommitReview, initialMsg, reviewID, config.APIURL, config.APIKey); err != nil {
 			return fmt.Errorf("failed to save HTML output: %w", err)
 		}
@@ -767,21 +777,21 @@ func runReviewWithOptions(opts reviewOptions) error {
 	}
 
 	// Handle serve mode
-	if opts.serve {
-		htmlPath := opts.saveHTML
+	if opts.Serve {
+		htmlPath := opts.SaveHTML
 
 		// Only pick a new port if progressive loading is NOT active (server not already running)
 		var nonProgressiveListener net.Listener
 		if !progressiveLoadingActive {
 			var selectedPort int
 			var err error
-			nonProgressiveListener, selectedPort, err = pickServePort(opts.port, 10)
+			nonProgressiveListener, selectedPort, err = pickServePort(opts.Port, 10)
 			if err != nil {
 				return fmt.Errorf("failed to find available port: %w", err)
 			}
-			if selectedPort != opts.port {
-				fmt.Printf("Port %d is busy; serving on %d instead.\n", opts.port, selectedPort)
-				opts.port = selectedPort
+			if selectedPort != opts.Port {
+				fmt.Printf("Port %d is busy; serving on %d instead.\n", opts.Port, selectedPort)
+				opts.Port = selectedPort
 			}
 		}
 
@@ -794,7 +804,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 			// If progressive loading was active, the server is already running.
 			// Don't start a new server - wait for decisions from HTTP or terminal.
 			if progressiveLoadingActive {
-				// Progressive loading active - server already running on opts.port
+				// Progressive loading active - server already running on opts.Port
 				syncedPrintf("\n📋 Review complete. Choose action:\n")
 				syncedPrintf("   [Enter]  Continue with commit\n")
 				syncedPrintf("   [Ctrl-C] Abort commit\n")
@@ -810,7 +820,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 
 				go func() {
 					<-sigChan
-					progressiveDecide(decisionAbort, "", false) // abort
+					progressiveDecide(decisionflow.DecisionAbort, "", false) // abort
 				}()
 
 				stopKeys := make(chan struct{})
@@ -818,18 +828,18 @@ func runReviewWithOptions(opts reviewOptions) error {
 				go func() {
 					defer close(keysDone)
 					for {
-						code, err := handleCtrlKeyWithCancel(stopKeys, true)
-						if errors.Is(err, errInputCancelled) {
+						code, err := ctrlkey.HandleWithCancel(stopKeys, true)
+						if errors.Is(err, reviewapi.ErrInputCancelled) {
 							return
 						}
 						if err != nil || code == 0 {
 							fallbackCode, fallbackErr := handleEnterFallbackWithCancel(stopKeys)
-							if fallbackErr == nil && fallbackCode == decisionCommit {
-								progressiveDecide(decisionCommit, "", false)
+							if fallbackErr == nil && fallbackCode == decisionflow.DecisionCommit {
+								progressiveDecide(decisionflow.DecisionCommit, "", false)
 							}
 							return
 						}
-						if code == decisionSkip || code == decisionVouch {
+						if code == decisionflow.DecisionSkip || code == decisionflow.DecisionVouch {
 							continue
 						}
 						progressiveDecide(code, "", false)
@@ -842,7 +852,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 				close(stopKeys)
 				<-keysDone
 				return executeDecision(decision.code, decision.message, decision.push, decisionExecutionContext{
-					precommit:          opts.precommit,
+					precommit:          opts.Precommit,
 					verbose:            verbose,
 					initialMsg:         initialMsg,
 					commitMsgPath:      commitMsgPath,
@@ -852,17 +862,17 @@ func runReviewWithOptions(opts reviewOptions) error {
 				})
 			} else {
 				// No progressive loading - use normal serveHTMLInteractive
-				code, msg, push, err := serveHTMLInteractive(htmlPath, opts.port, nonProgressiveListener, initialMsg, false)
+				code, msg, push, err := serveHTMLInteractive(htmlPath, opts.Port, nonProgressiveListener, initialMsg, false)
 				if err != nil {
 					return err
 				}
 				code = normalizeDecisionCode(code)
 
-				if opts.precommit {
+				if opts.Precommit {
 					exitCode := precommitExitCodeForDecision(code)
 					// Hook path: persist commit message/push request for downstream hooks and exit with hook code
 					if commitMsgPath != "" {
-						if exitCode == decisionCommit {
+						if exitCode == decisionflow.DecisionCommit {
 							msgToPersist := msg
 							if strings.TrimSpace(msgToPersist) == "" {
 								msgToPersist = initialMsg
@@ -880,7 +890,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 						}
 					}
 
-					if exitCode == decisionCommit && push {
+					if exitCode == decisionflow.DecisionCommit && push {
 						if err := persistPushRequest(commitMsgPath); err != nil {
 							fmt.Fprintf(os.Stderr, "Warning: failed to store push request: %v\n", err)
 						}
@@ -906,9 +916,9 @@ func runReviewWithOptions(opts reviewOptions) error {
 
 		// Non-interactive serve: just host HTML (skip if progressive loading was active - server already running)
 		if !progressiveLoadingActive {
-			serveURL := fmt.Sprintf("http://localhost:%d", opts.port)
+			serveURL := fmt.Sprintf("http://localhost:%d", opts.Port)
 			fmt.Printf("Serving HTML review at: %s\n", highlightURL(serveURL))
-			if err := serveHTML(htmlPath, opts.port, nonProgressiveListener); err != nil {
+			if err := serveHTML(htmlPath, opts.Port, nonProgressiveListener); err != nil {
 				return fmt.Errorf("failed to serve HTML: %w", err)
 			}
 		} else {
@@ -930,8 +940,8 @@ func runReviewWithOptions(opts reviewOptions) error {
 	}
 
 	// Render result to stdout (skip in interactive mode or when serving - handled by UI)
-	if !useInteractive && !opts.serve {
-		if err := renderResult(result, opts.output); err != nil {
+	if !useInteractive && !opts.Serve {
+		if err := renderResult(result, opts.Output); err != nil {
 			return fmt.Errorf("failed to render result: %w", err)
 		}
 	}
@@ -946,25 +956,25 @@ func runReviewWithOptions(opts reviewOptions) error {
 	return nil
 }
 
-func collectDiffWithOptions(opts reviewOptions) ([]byte, error) {
-	diffSource := opts.diffSource
-	verbose := opts.verbose
+func collectDiffWithOptions(opts reviewopts.Options) ([]byte, error) {
+	diffSource := opts.DiffSource
+	verbose := opts.Verbose
 
 	switch diffSource {
 	case "staged":
 		if verbose {
 			log.Println("Collecting staged changes...")
 		}
-		return runGitCommand("diff", "--staged")
+		return reviewapi.RunGitCommand("diff", "--staged")
 
 	case "working":
 		if verbose {
 			log.Println("Collecting working tree changes...")
 		}
-		return runGitCommand("diff")
+		return reviewapi.RunGitCommand("diff")
 
 	case "commit":
-		commitVal := opts.commitVal
+		commitVal := opts.CommitVal
 		if commitVal == "" {
 			return nil, fmt.Errorf("--commit is required when diff-source=commit")
 		}
@@ -974,23 +984,23 @@ func collectDiffWithOptions(opts reviewOptions) ([]byte, error) {
 		// Check if it's a range (contains .. or ...)
 		if strings.Contains(commitVal, "..") {
 			// It's a commit range, use git diff
-			return runGitCommand("diff", commitVal)
+			return reviewapi.RunGitCommand("diff", commitVal)
 		}
 		// Single commit, use git show to get the commit's changes
-		return runGitCommand("show", "--format=", commitVal)
+		return reviewapi.RunGitCommand("show", "--format=", commitVal)
 
 	case "range":
-		rangeVal := opts.rangeVal
+		rangeVal := opts.RangeVal
 		if rangeVal == "" {
 			return nil, fmt.Errorf("--range is required when diff-source=range")
 		}
 		if verbose {
 			log.Printf("Collecting diff for range: %s", rangeVal)
 		}
-		return runGitCommand("diff", rangeVal)
+		return reviewapi.RunGitCommand("diff", rangeVal)
 
 	case "file":
-		filePath := opts.diffFile
+		filePath := opts.DiffFile
 		if filePath == "" {
 			return nil, fmt.Errorf("--diff-file is required when diff-source=file")
 		}
@@ -1115,7 +1125,7 @@ func runCommitAndMaybePush(message string, push bool, verbose bool) error {
 	return nil
 }
 
-func renderResult(result *diffReviewResponse, format string) error {
+func renderResult(result *reviewmodel.DiffReviewResponse, format string) error {
 	switch format {
 	case "json":
 		encoder := json.NewEncoder(os.Stdout)
@@ -1130,7 +1140,7 @@ func renderResult(result *diffReviewResponse, format string) error {
 	}
 }
 
-func renderPretty(result *diffReviewResponse) error {
+func renderPretty(result *reviewmodel.DiffReviewResponse) error {
 	fmt.Println("\n" + strings.Repeat("=", 80))
 	fmt.Println("LIVEREVIEW RESULTS")
 	fmt.Println(strings.Repeat("=", 80))
@@ -1184,7 +1194,7 @@ func renderPretty(result *diffReviewResponse) error {
 	return nil
 }
 
-func countTotalComments(files []diffReviewFileResult) int {
+func countTotalComments(files []reviewmodel.DiffReviewFileResult) int {
 	total := 0
 	for _, file := range files {
 		total += len(file.Comments)
@@ -1235,7 +1245,7 @@ func loadConfigValues(apiKeyOverride, apiURLOverride string, verbose bool) (*Con
 	}
 
 	// Load API URL: CLI/env overrides config file
-	if apiURLOverride != "" && apiURLOverride != defaultAPIURL {
+	if apiURLOverride != "" && apiURLOverride != reviewopts.DefaultAPIURL {
 		config.APIURL = apiURLOverride
 		if verbose {
 			log.Println("Using API URL from CLI flag or environment variable")
@@ -1246,7 +1256,7 @@ func loadConfigValues(apiKeyOverride, apiURLOverride string, verbose bool) (*Con
 			log.Println("Using API URL from config file")
 		}
 	} else {
-		config.APIURL = defaultAPIURL
+		config.APIURL = reviewopts.DefaultAPIURL
 		if verbose {
 			log.Printf("Using default API URL: %s", config.APIURL)
 		}
@@ -1292,7 +1302,7 @@ func saveBundleForInspection(path string, diffContent, zipData []byte, base64Dif
 }
 
 // saveJSONResponse saves the raw JSON response to a file
-func saveJSONResponse(path string, result *diffReviewResponse, verbose bool) error {
+func saveJSONResponse(path string, result *reviewmodel.DiffReviewResponse, verbose bool) error {
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
@@ -1310,7 +1320,7 @@ func saveJSONResponse(path string, result *diffReviewResponse, verbose bool) err
 }
 
 // saveTextOutput saves formatted text output with special markers for easy comment navigation
-func saveTextOutput(path string, result *diffReviewResponse, verbose bool) error {
+func saveTextOutput(path string, result *reviewmodel.DiffReviewResponse, verbose bool) error {
 	var buf bytes.Buffer
 
 	// Use a distinctive marker that's easy to search for
@@ -1349,7 +1359,7 @@ func saveTextOutput(path string, result *diffReviewResponse, verbose bool) error
 			buf.WriteString(fmt.Sprintf("\n  %d comment(s) on this file\n\n", len(file.Comments)))
 
 			// Create a map of line numbers to comments for easy lookup
-			commentsByLine := make(map[int][]diffReviewComment)
+			commentsByLine := make(map[int][]reviewmodel.DiffReviewComment)
 			for _, comment := range file.Comments {
 				commentsByLine[comment.Line] = append(commentsByLine[comment.Line], comment)
 			}
@@ -1383,7 +1393,7 @@ func saveTextOutput(path string, result *diffReviewResponse, verbose bool) error
 }
 
 // renderHunkWithComments renders a diff hunk with line numbers and inline comments
-func renderHunkWithComments(buf *bytes.Buffer, hunk diffReviewHunk, commentsByLine map[int][]diffReviewComment, marker string) {
+func renderHunkWithComments(buf *bytes.Buffer, hunk reviewmodel.DiffReviewHunk, commentsByLine map[int][]reviewmodel.DiffReviewComment, marker string) {
 	// Write hunk header
 	buf.WriteString(strings.Repeat("-", 80) + "\n")
 	buf.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n",
@@ -1467,20 +1477,20 @@ func renderHunkWithComments(buf *bytes.Buffer, hunk diffReviewHunk, commentsByLi
 }
 
 // parseDiffToFiles parses raw git diff content into file structures for HTML display
-func parseDiffToFiles(diffContent []byte) ([]diffReviewFileResult, error) {
+func parseDiffToFiles(diffContent []byte) ([]reviewmodel.DiffReviewFileResult, error) {
 	if len(diffContent) == 0 {
 		return nil, fmt.Errorf("empty diff content")
 	}
 
-	var files []diffReviewFileResult
+	var files []reviewmodel.DiffReviewFileResult
 	diffStr := string(diffContent)
 	// Handle both LF (\n) and CRLF (\r\n) line endings for cross-platform compatibility
 	lines := strings.FieldsFunc(diffStr, func(r rune) bool {
 		return r == '\n' || r == '\r'
 	})
 
-	var currentFile *diffReviewFileResult
-	var currentHunk *diffReviewHunk
+	var currentFile *reviewmodel.DiffReviewFileResult
+	var currentHunk *reviewmodel.DiffReviewHunk
 	var hunkLines []string
 
 	for i := 0; i < len(lines); i++ {
@@ -1507,10 +1517,10 @@ func parseDiffToFiles(diffContent []byte) ([]diffReviewFileResult, error) {
 				}
 			}
 
-			currentFile = &diffReviewFileResult{
+			currentFile = &reviewmodel.DiffReviewFileResult{
 				FilePath: filePath,
-				Hunks:    []diffReviewHunk{},
-				Comments: []diffReviewComment{},
+				Hunks:    []reviewmodel.DiffReviewHunk{},
+				Comments: []reviewmodel.DiffReviewComment{},
 			}
 			currentHunk = nil
 			hunkLines = nil
@@ -1540,7 +1550,7 @@ func parseDiffToFiles(diffContent []byte) ([]diffReviewFileResult, error) {
 					newCount = 1
 				}
 
-				currentHunk = &diffReviewHunk{
+				currentHunk = &reviewmodel.DiffReviewHunk{
 					OldStartLine: oldStart,
 					OldLineCount: oldCount,
 					NewStartLine: newStart,
@@ -1571,12 +1581,12 @@ func parseDiffToFiles(diffContent []byte) ([]diffReviewFileResult, error) {
 
 // saveHTMLOutput saves formatted HTML output with GitHub-style review UI
 
-func saveHTMLOutput(path string, result *diffReviewResponse, verbose bool, interactive bool, isPostCommitReview bool, initialMsg, reviewID, apiURL, apiKey string) error {
+func saveHTMLOutput(path string, result *reviewmodel.DiffReviewResponse, verbose bool, interactive bool, isPostCommitReview bool, initialMsg, reviewID, apiURL, apiKey string) error {
 	// Prepare template data
-	data := prepareHTMLData(result, interactive, isPostCommitReview, initialMsg, reviewID, apiURL, apiKey)
+	data := reviewhtml.PrepareHTMLData(result, interactive, isPostCommitReview, initialMsg, reviewID, apiURL, apiKey)
 
 	// Render HTML using template
-	htmlContent, err := renderHTMLTemplate(data)
+	htmlContent, err := staticserve.RenderPreactHTML(data)
 	if err != nil {
 		return fmt.Errorf("failed to render HTML template: %w", err)
 	}
@@ -1622,7 +1632,7 @@ func serveHTML(htmlPath string, port int, ln net.Listener) error {
 	// Setup HTTP handler
 	mux := http.NewServeMux()
 	// Serve static assets (JS, CSS) from embedded filesystem
-	mux.Handle("/static/", http.StripPrefix("/static/", getStaticHandler()))
+	mux.Handle("/static/", http.StripPrefix("/static/", staticserve.GetStaticHandler()))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, absPath)
 	})
@@ -1721,13 +1731,13 @@ func openTTY() (*os.File, error) {
 func handleEnterFallbackWithCancel(stop <-chan struct{}) (int, error) {
 	code, err := input.HandleEnterFallbackWithCancel(stop)
 	if errors.Is(err, input.ErrInputCancelled) {
-		return 0, errInputCancelled
+		return 0, reviewapi.ErrInputCancelled
 	}
 	if err != nil {
 		return 0, err
 	}
 	if code == input.DecisionCommit {
-		return decisionCommit, nil
+		return decisionflow.DecisionCommit, nil
 	}
 	return 0, nil
 }
@@ -1850,7 +1860,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 	// Setup HTTP handler
 	mux := http.NewServeMux()
 	// Serve static assets (JS, CSS) from embedded filesystem
-	mux.Handle("/static/", http.StripPrefix("/static/", getStaticHandler()))
+	mux.Handle("/static/", http.StripPrefix("/static/", staticserve.GetStaticHandler()))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, absPath)
 	})
@@ -1861,7 +1871,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 		push    bool
 	}
 
-	const currentPhase = phaseReviewComplete
+	const currentPhase = decisionflow.PhaseReviewComplete
 
 	decisionChan := make(chan precommitDecision, 1)
 	var decideOnce sync.Once
@@ -1871,13 +1881,13 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 		})
 	}
 	handleDecision := func(w http.ResponseWriter, code int, message string, push bool) {
-		if err := validateInteractiveDecisionRequest(code, message, currentPhase); err != nil {
-			reqErr, ok := err.(*decisionRequestError)
+		if err := decisionflow.ValidateRequest(code, message, currentPhase); err != nil {
+			reqErr, ok := err.(*decisionflow.RequestError)
 			if !ok {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			http.Error(w, reqErr.message, reqErr.status)
+			http.Error(w, reqErr.Error(), reqErr.StatusCode())
 			return
 		}
 		decide(code, message, push)
@@ -1892,7 +1902,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 			return
 		}
 		msg := readCommitMessageFromRequest(r)
-		handleDecision(w, decisionCommit, msg, false)
+		handleDecision(w, decisionflow.DecisionCommit, msg, false)
 	})
 
 	mux.HandleFunc("/commit-push", func(w http.ResponseWriter, r *http.Request) {
@@ -1901,7 +1911,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 			return
 		}
 		msg := readCommitMessageFromRequest(r)
-		handleDecision(w, decisionCommit, msg, true)
+		handleDecision(w, decisionflow.DecisionCommit, msg, true)
 	})
 
 	mux.HandleFunc("/skip", func(w http.ResponseWriter, r *http.Request) {
@@ -1910,7 +1920,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 			return
 		}
 		msg := readCommitMessageFromRequest(r)
-		handleDecision(w, decisionSkip, msg, false)
+		handleDecision(w, decisionflow.DecisionSkip, msg, false)
 	})
 
 	mux.HandleFunc("/vouch", func(w http.ResponseWriter, r *http.Request) {
@@ -1919,7 +1929,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 			return
 		}
 		msg := readCommitMessageFromRequest(r)
-		handleDecision(w, decisionVouch, msg, false)
+		handleDecision(w, decisionflow.DecisionVouch, msg, false)
 	})
 
 	mux.HandleFunc("/abort", func(w http.ResponseWriter, r *http.Request) {
@@ -1927,7 +1937,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		handleDecision(w, decisionAbort, "", false)
+		handleDecision(w, decisionflow.DecisionAbort, "", false)
 	})
 
 	// Start server in background using the already-open listener
@@ -1965,18 +1975,18 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 	go func() {
 		defer close(keysDone)
 		for {
-			code, err := handleCtrlKeyWithCancel(stopKeys, true)
-			if errors.Is(err, errInputCancelled) {
+			code, err := ctrlkey.HandleWithCancel(stopKeys, true)
+			if errors.Is(err, reviewapi.ErrInputCancelled) {
 				return
 			}
 			if err != nil || code == 0 {
 				fallbackCode, fallbackErr := handleEnterFallbackWithCancel(stopKeys)
-				if fallbackErr == nil && fallbackCode == decisionCommit {
-					decide(decisionCommit, "", false)
+				if fallbackErr == nil && fallbackCode == decisionflow.DecisionCommit {
+					decide(decisionflow.DecisionCommit, "", false)
 				}
 				return
 			}
-			if code == decisionSkip || code == decisionVouch {
+			if code == decisionflow.DecisionSkip || code == decisionflow.DecisionVouch {
 				continue
 			}
 			decide(code, "", false)
@@ -2002,13 +2012,13 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 	decision := <-decisionChan
 
 	switch decision.code {
-	case decisionCommit:
+	case decisionflow.DecisionCommit:
 		syncedPrintln("\n✅ Proceeding with commit")
-	case decisionSkip:
+	case decisionflow.DecisionSkip:
 		syncedPrintln("\n⏭️  Review skipped, proceeding with commit")
-	case decisionVouch:
+	case decisionflow.DecisionVouch:
 		syncedPrintln("\n✅ Vouched, proceeding with commit")
-	case decisionAbort:
+	case decisionflow.DecisionAbort:
 		syncedPrintln("\n❌ Commit aborted by user")
 	}
 	syncedPrintln()

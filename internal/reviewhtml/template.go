@@ -1,4 +1,4 @@
-package main
+package reviewhtml
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/HexmosTech/git-lrc/internal/naming"
+	"github.com/HexmosTech/git-lrc/internal/reviewmodel"
 	"github.com/HexmosTech/git-lrc/result"
 )
 
@@ -15,13 +16,20 @@ type HTMLHunkData = result.HTMLHunkData
 type HTMLLineData = result.HTMLLineData
 type HTMLCommentData = result.HTMLCommentData
 
-// prepareHTMLData converts the API response to template data
-func prepareHTMLData(result *diffReviewResponse, interactive bool, isPostCommitReview bool, initialMsg, reviewID, apiURL, apiKey string) *HTMLTemplateData {
+func countTotalComments(files []reviewmodel.DiffReviewFileResult) int {
+	total := 0
+	for _, file := range files {
+		total += len(file.Comments)
+	}
+	return total
+}
+
+func PrepareHTMLData(result *reviewmodel.DiffReviewResponse, interactive bool, isPostCommitReview bool, initialMsg, reviewID, apiURL, apiKey string) *HTMLTemplateData {
 	totalComments := countTotalComments(result.Files)
 
 	files := make([]HTMLFileData, len(result.Files))
 	for i, file := range result.Files {
-		files[i] = prepareFileData(file)
+		files[i] = PrepareFileData(file)
 	}
 
 	return &HTMLTemplateData{
@@ -42,18 +50,15 @@ func prepareHTMLData(result *diffReviewResponse, interactive bool, isPostCommitR
 	}
 }
 
-// prepareFileData converts a file result to HTML file data
-func prepareFileData(file diffReviewFileResult) HTMLFileData {
+func PrepareFileData(file reviewmodel.DiffReviewFileResult) HTMLFileData {
 	fileID := strings.ReplaceAll(file.FilePath, "/", "_")
 	hasComments := len(file.Comments) > 0
 
-	// Create comment lookup map
-	commentsByLine := make(map[int][]diffReviewComment)
+	commentsByLine := make(map[int][]reviewmodel.DiffReviewComment)
 	for _, comment := range file.Comments {
 		commentsByLine[comment.Line] = append(commentsByLine[comment.Line], comment)
 	}
 
-	// Process hunks
 	hunks := make([]HTMLHunkData, len(file.Hunks))
 	for i, hunk := range file.Hunks {
 		hunks[i] = prepareHunkData(hunk, commentsByLine, file.FilePath)
@@ -68,8 +73,7 @@ func prepareFileData(file diffReviewFileResult) HTMLFileData {
 	}
 }
 
-// prepareHunkData converts a hunk to HTML hunk data
-func prepareHunkData(hunk diffReviewHunk, commentsByLine map[int][]diffReviewComment, filePath string) HTMLHunkData {
+func prepareHunkData(hunk reviewmodel.DiffReviewHunk, commentsByLine map[int][]reviewmodel.DiffReviewComment, filePath string) HTMLHunkData {
 	header := fmt.Sprintf("@@ -%d,%d +%d,%d @@",
 		hunk.OldStartLine, hunk.OldLineCount,
 		hunk.NewStartLine, hunk.NewLineCount)
@@ -82,13 +86,12 @@ func prepareHunkData(hunk diffReviewHunk, commentsByLine map[int][]diffReviewCom
 	}
 }
 
-// parseHunkLines parses hunk content into lines with comments
-func parseHunkLines(hunk diffReviewHunk, commentsByLine map[int][]diffReviewComment, filePath string) []HTMLLineData {
+func parseHunkLines(hunk reviewmodel.DiffReviewHunk, commentsByLine map[int][]reviewmodel.DiffReviewComment, filePath string) []HTMLLineData {
 	contentLines := strings.Split(hunk.Content, "\n")
 	oldLine := hunk.OldStartLine
 	newLine := hunk.NewStartLine
 
-	var result []HTMLLineData
+	var out []HTMLLineData
 
 	for _, line := range contentLines {
 		if len(line) == 0 || strings.HasPrefix(line, "@@") {
@@ -98,48 +101,29 @@ func parseHunkLines(hunk diffReviewHunk, commentsByLine map[int][]diffReviewComm
 		var lineData HTMLLineData
 
 		if strings.HasPrefix(line, "-") {
-			lineData = HTMLLineData{
-				OldNum:  fmt.Sprintf("%d", oldLine),
-				NewNum:  "",
-				Content: line,
-				Class:   "diff-del",
-			}
+			lineData = HTMLLineData{OldNum: fmt.Sprintf("%d", oldLine), NewNum: "", Content: line, Class: "diff-del"}
 			oldLine++
 		} else if strings.HasPrefix(line, "+") {
-			lineData = HTMLLineData{
-				OldNum:  "",
-				NewNum:  fmt.Sprintf("%d", newLine),
-				Content: line,
-				Class:   "diff-add",
-			}
-
-			// Check for comments on this line
+			lineData = HTMLLineData{OldNum: "", NewNum: fmt.Sprintf("%d", newLine), Content: line, Class: "diff-add"}
 			if comments, hasComment := commentsByLine[newLine]; hasComment {
 				lineData.IsComment = true
 				lineData.Comments = prepareComments(comments, filePath)
 			}
-
 			newLine++
 		} else {
-			lineData = HTMLLineData{
-				OldNum:  fmt.Sprintf("%d", oldLine),
-				NewNum:  fmt.Sprintf("%d", newLine),
-				Content: " " + line,
-				Class:   "diff-context",
-			}
+			lineData = HTMLLineData{OldNum: fmt.Sprintf("%d", oldLine), NewNum: fmt.Sprintf("%d", newLine), Content: " " + line, Class: "diff-context"}
 			oldLine++
 			newLine++
 		}
 
-		result = append(result, lineData)
+		out = append(out, lineData)
 	}
 
-	return result
+	return out
 }
 
-// prepareComments converts comments to HTML comment data
-func prepareComments(comments []diffReviewComment, filePath string) []HTMLCommentData {
-	result := make([]HTMLCommentData, len(comments))
+func prepareComments(comments []reviewmodel.DiffReviewComment, filePath string) []HTMLCommentData {
+	out := make([]HTMLCommentData, len(comments))
 
 	for i, comment := range comments {
 		severity := strings.ToLower(comment.Severity)
@@ -152,7 +136,7 @@ func prepareComments(comments []diffReviewComment, filePath string) []HTMLCommen
 			badgeClass = "badge-info"
 		}
 
-		result[i] = HTMLCommentData{
+		out[i] = HTMLCommentData{
 			Severity:    strings.ToUpper(severity),
 			BadgeClass:  badgeClass,
 			Category:    comment.Category,
@@ -163,10 +147,5 @@ func prepareComments(comments []diffReviewComment, filePath string) []HTMLCommen
 		}
 	}
 
-	return result
-}
-
-// renderHTMLTemplate renders the HTML using the Preact-based template
-func renderHTMLTemplate(data *HTMLTemplateData) (string, error) {
-	return renderPreactHTML(data)
+	return out
 }

@@ -4,31 +4,33 @@ import (
 	"bytes"
 	"net/http"
 	"testing"
+
+	"github.com/HexmosTech/git-lrc/internal/decisionflow"
 )
 
 func TestActionAllowedInPhase(t *testing.T) {
 	tests := []struct {
 		name  string
 		code  int
-		phase interactivePhase
+		phase decisionflow.Phase
 		want  bool
 	}{
-		{name: "abort allowed while reviewing", code: decisionAbort, phase: phaseReviewRunning, want: true},
-		{name: "abort allowed after review", code: decisionAbort, phase: phaseReviewComplete, want: true},
-		{name: "skip allowed while reviewing", code: decisionSkip, phase: phaseReviewRunning, want: true},
-		{name: "skip blocked after review", code: decisionSkip, phase: phaseReviewComplete, want: false},
-		{name: "vouch allowed while reviewing", code: decisionVouch, phase: phaseReviewRunning, want: true},
-		{name: "vouch blocked after review", code: decisionVouch, phase: phaseReviewComplete, want: false},
-		{name: "commit blocked while reviewing", code: decisionCommit, phase: phaseReviewRunning, want: false},
-		{name: "commit allowed after review", code: decisionCommit, phase: phaseReviewComplete, want: true},
-		{name: "unknown action blocked", code: 999, phase: phaseReviewComplete, want: false},
+		{name: "abort allowed while reviewing", code: decisionflow.DecisionAbort, phase: decisionflow.PhaseReviewRunning, want: true},
+		{name: "abort allowed after review", code: decisionflow.DecisionAbort, phase: decisionflow.PhaseReviewComplete, want: true},
+		{name: "skip allowed while reviewing", code: decisionflow.DecisionSkip, phase: decisionflow.PhaseReviewRunning, want: true},
+		{name: "skip blocked after review", code: decisionflow.DecisionSkip, phase: decisionflow.PhaseReviewComplete, want: false},
+		{name: "vouch allowed while reviewing", code: decisionflow.DecisionVouch, phase: decisionflow.PhaseReviewRunning, want: true},
+		{name: "vouch blocked after review", code: decisionflow.DecisionVouch, phase: decisionflow.PhaseReviewComplete, want: false},
+		{name: "commit blocked while reviewing", code: decisionflow.DecisionCommit, phase: decisionflow.PhaseReviewRunning, want: false},
+		{name: "commit allowed after review", code: decisionflow.DecisionCommit, phase: decisionflow.PhaseReviewComplete, want: true},
+		{name: "unknown action blocked", code: 999, phase: decisionflow.PhaseReviewComplete, want: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := actionAllowedInPhase(tt.code, tt.phase)
+			got := decisionflow.ActionAllowedInPhase(tt.code, tt.phase)
 			if got != tt.want {
-				t.Fatalf("actionAllowedInPhase(%d, %v) = %v, want %v", tt.code, tt.phase, got, tt.want)
+				t.Fatalf("ActionAllowedInPhase(%d, %v) = %v, want %v", tt.code, tt.phase, got, tt.want)
 			}
 		})
 	}
@@ -39,21 +41,21 @@ func TestValidateInteractiveDecisionRequest(t *testing.T) {
 		name       string
 		code       int
 		message    string
-		phase      interactivePhase
+		phase      decisionflow.Phase
 		wantStatus int
 		wantErr    bool
 	}{
-		{name: "commit with message after review", code: decisionCommit, message: "feat: ok", phase: phaseReviewComplete, wantErr: false},
-		{name: "commit empty message rejected", code: decisionCommit, message: "   ", phase: phaseReviewComplete, wantErr: true, wantStatus: http.StatusBadRequest},
-		{name: "commit while reviewing rejected", code: decisionCommit, message: "feat: no", phase: phaseReviewRunning, wantErr: true, wantStatus: http.StatusConflict},
-		{name: "skip while reviewing allowed", code: decisionSkip, message: "", phase: phaseReviewRunning, wantErr: false},
-		{name: "skip after review rejected", code: decisionSkip, message: "", phase: phaseReviewComplete, wantErr: true, wantStatus: http.StatusConflict},
-		{name: "abort while reviewing allowed", code: decisionAbort, message: "", phase: phaseReviewRunning, wantErr: false},
+		{name: "commit with message after review", code: decisionflow.DecisionCommit, message: "feat: ok", phase: decisionflow.PhaseReviewComplete, wantErr: false},
+		{name: "commit empty message rejected", code: decisionflow.DecisionCommit, message: "   ", phase: decisionflow.PhaseReviewComplete, wantErr: true, wantStatus: http.StatusBadRequest},
+		{name: "commit while reviewing rejected", code: decisionflow.DecisionCommit, message: "feat: no", phase: decisionflow.PhaseReviewRunning, wantErr: true, wantStatus: http.StatusConflict},
+		{name: "skip while reviewing allowed", code: decisionflow.DecisionSkip, message: "", phase: decisionflow.PhaseReviewRunning, wantErr: false},
+		{name: "skip after review rejected", code: decisionflow.DecisionSkip, message: "", phase: decisionflow.PhaseReviewComplete, wantErr: true, wantStatus: http.StatusConflict},
+		{name: "abort while reviewing allowed", code: decisionflow.DecisionAbort, message: "", phase: decisionflow.PhaseReviewRunning, wantErr: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateInteractiveDecisionRequest(tt.code, tt.message, tt.phase)
+			err := decisionflow.ValidateRequest(tt.code, tt.message, tt.phase)
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -61,12 +63,12 @@ func TestValidateInteractiveDecisionRequest(t *testing.T) {
 				t.Fatalf("expected no error, got %v", err)
 			}
 			if tt.wantErr {
-				reqErr, ok := err.(*decisionRequestError)
+				reqErr, ok := err.(*decisionflow.RequestError)
 				if !ok {
-					t.Fatalf("expected *decisionRequestError, got %T", err)
+					t.Fatalf("expected *decisionflow.RequestError, got %T", err)
 				}
-				if reqErr.status != tt.wantStatus {
-					t.Fatalf("status = %d, want %d", reqErr.status, tt.wantStatus)
+				if reqErr.StatusCode() != tt.wantStatus {
+					t.Fatalf("status = %d, want %d", reqErr.StatusCode(), tt.wantStatus)
 				}
 			}
 		})

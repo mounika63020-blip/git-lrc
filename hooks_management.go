@@ -8,6 +8,7 @@ import (
 
 	gitops "github.com/HexmosTech/git-lrc/gitops"
 	hooksvc "github.com/HexmosTech/git-lrc/hooks"
+	"github.com/HexmosTech/git-lrc/internal/reviewapi"
 	"github.com/urfave/cli/v2"
 )
 
@@ -76,7 +77,7 @@ func runHooksInstall(c *cli.Context) error {
 			return fmt.Errorf("not in a git repository (no .git directory found)")
 		}
 
-		gitDir, err := resolveGitDir()
+		gitDir, err := reviewapi.ResolveGitDir()
 		if err != nil {
 			return err
 		}
@@ -168,7 +169,7 @@ func runHooksUninstall(c *cli.Context) error {
 		if !isGitRepository() {
 			return fmt.Errorf("not in a git repository (no .git directory found)")
 		}
-		gitDir, err := resolveGitDir()
+		gitDir, err := reviewapi.ResolveGitDir()
 		if err != nil {
 			return err
 		}
@@ -280,7 +281,7 @@ func cleanEmptyHooksDir(dir string) {
 }
 
 func runHooksDisable(c *cli.Context) error {
-	gitDir, err := resolveGitDir()
+	gitDir, err := reviewapi.ResolveGitDir()
 	if err != nil {
 		return fmt.Errorf("not in a git repository: %w", err)
 	}
@@ -300,7 +301,7 @@ func runHooksDisable(c *cli.Context) error {
 }
 
 func runHooksEnable(c *cli.Context) error {
-	gitDir, err := resolveGitDir()
+	gitDir, err := reviewapi.ResolveGitDir()
 	if err != nil {
 		return fmt.Errorf("not in a git repository: %w", err)
 	}
@@ -330,7 +331,7 @@ func runHooksStatus(c *cli.Context) error {
 		return fmt.Errorf("failed to resolve hooks path: %w", err)
 	}
 
-	gitDir, gitErr := resolveGitDir()
+	gitDir, gitErr := reviewapi.ResolveGitDir()
 	repoDisabled := false
 	if gitErr == nil {
 		repoDisabled = fileExists(filepath.Join(gitDir, "lrc", "disabled"))

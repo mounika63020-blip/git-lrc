@@ -4,18 +4,20 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/HexmosTech/git-lrc/internal/reviewmodel"
 )
 
 // TestHTMLOutputConsistency tests that refactored HTML generation produces identical output
 func TestHTMLOutputConsistency(t *testing.T) {
 	// Create test data
-	result := &diffReviewResponse{
+	result := &reviewmodel.DiffReviewResponse{
 		Status:  "completed",
 		Summary: "# Test Summary\n\nThis is a **test** summary with:\n- Item 1\n- Item 2\n\n## Code Example\n\n```go\nfunc test() {\n    return true\n}\n```",
-		Files: []diffReviewFileResult{
+		Files: []reviewmodel.DiffReviewFileResult{
 			{
 				FilePath: "test/file.go",
-				Hunks: []diffReviewHunk{
+				Hunks: []reviewmodel.DiffReviewHunk{
 					{
 						OldStartLine: 10,
 						OldLineCount: 5,
@@ -30,7 +32,7 @@ func TestHTMLOutputConsistency(t *testing.T) {
  }`,
 					},
 				},
-				Comments: []diffReviewComment{
+				Comments: []reviewmodel.DiffReviewComment{
 					{
 						Line:     11,
 						Content:  "This is a test comment with\nmultiple lines",
@@ -47,7 +49,7 @@ func TestHTMLOutputConsistency(t *testing.T) {
 			},
 			{
 				FilePath: "test/another.go",
-				Hunks: []diffReviewHunk{
+				Hunks: []reviewmodel.DiffReviewHunk{
 					{
 						OldStartLine: 1,
 						OldLineCount: 3,
@@ -60,7 +62,7 @@ func TestHTMLOutputConsistency(t *testing.T) {
  func main() {`,
 					},
 				},
-				Comments: []diffReviewComment{
+				Comments: []reviewmodel.DiffReviewComment{
 					{
 						Line:     2,
 						Content:  "Consider using a different import",
@@ -142,24 +144,24 @@ func TestHTMLTemplateWithEmptyData(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		result *diffReviewResponse
+		result *reviewmodel.DiffReviewResponse
 	}{
 		{
 			name: "no files",
-			result: &diffReviewResponse{
+			result: &reviewmodel.DiffReviewResponse{
 				Status:  "completed",
 				Summary: "No changes",
-				Files:   []diffReviewFileResult{},
+				Files:   []reviewmodel.DiffReviewFileResult{},
 			},
 		},
 		{
 			name: "file with no comments",
-			result: &diffReviewResponse{
+			result: &reviewmodel.DiffReviewResponse{
 				Status: "completed",
-				Files: []diffReviewFileResult{
+				Files: []reviewmodel.DiffReviewFileResult{
 					{
 						FilePath: "test.go",
-						Hunks: []diffReviewHunk{
+						Hunks: []reviewmodel.DiffReviewHunk{
 							{
 								OldStartLine: 1,
 								OldLineCount: 1,
@@ -168,7 +170,7 @@ func TestHTMLTemplateWithEmptyData(t *testing.T) {
 								Content:      " unchanged",
 							},
 						},
-						Comments: []diffReviewComment{},
+						Comments: []reviewmodel.DiffReviewComment{},
 					},
 				},
 			},

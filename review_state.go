@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/HexmosTech/git-lrc/internal/naming"
+	"github.com/HexmosTech/git-lrc/internal/reviewhtml"
+	"github.com/HexmosTech/git-lrc/internal/reviewmodel"
+	"github.com/HexmosTech/git-lrc/result"
 )
 
 // ReviewState holds the current state of a review for the web UI
@@ -23,8 +26,8 @@ type ReviewState struct {
 	Status string `json:"status"` // "in_progress", "completed", "failed"
 
 	// Content
-	Summary string                 `json:"summary"`
-	Files   []diffReviewFileResult `json:"files"`
+	Summary string                             `json:"summary"`
+	Files   []reviewmodel.DiffReviewFileResult `json:"files"`
 
 	// Counts
 	TotalFiles    int `json:"totalFiles"`
@@ -43,7 +46,7 @@ type ReviewState struct {
 }
 
 // NewReviewState creates a new ReviewState with initial values
-func NewReviewState(reviewID string, files []diffReviewFileResult, interactive, isPostCommitReview bool, initialMsg, apiURL string) *ReviewState {
+func NewReviewState(reviewID string, files []reviewmodel.DiffReviewFileResult, interactive, isPostCommitReview bool, initialMsg, apiURL string) *ReviewState {
 	return &ReviewState{
 		ReviewID:           reviewID,
 		FriendlyName:       naming.GenerateFriendlyName(),
@@ -62,7 +65,7 @@ func NewReviewState(reviewID string, files []diffReviewFileResult, interactive, 
 // UpdateFromResult updates the state from a final review result
 // It merges comments into existing files rather than replacing them,
 // to preserve the hunk data from the initial diff parsing
-func (rs *ReviewState) UpdateFromResult(result *diffReviewResponse) {
+func (rs *ReviewState) UpdateFromResult(result *reviewmodel.DiffReviewResponse) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -131,16 +134,16 @@ func (rs *ReviewState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // PrepareHTMLData converts ReviewState to HTMLTemplateData for initial page render
-func (rs *ReviewState) PrepareHTMLData() *HTMLTemplateData {
+func (rs *ReviewState) PrepareHTMLData() *result.HTMLTemplateData {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
 
-	files := make([]HTMLFileData, len(rs.Files))
+	files := make([]result.HTMLFileData, len(rs.Files))
 	for i, file := range rs.Files {
-		files[i] = prepareFileData(file)
+		files[i] = reviewhtml.PrepareFileData(file)
 	}
 
-	return &HTMLTemplateData{
+	return &result.HTMLTemplateData{
 		GeneratedTime:      rs.GeneratedTime,
 		Summary:            "", // Don't include placeholder summary
 		Status:             rs.Status,

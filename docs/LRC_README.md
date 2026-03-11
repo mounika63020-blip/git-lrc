@@ -7,13 +7,13 @@
 Build the binary:
 
 ```bash
-make lrc
+make build-local
 ```
 
 Or build directly:
 
 ```bash
-go build -o lrc ./cmd/lrc
+go build -o lrc .
 ```
 
 ## Usage
@@ -32,13 +32,13 @@ Install pre-commit hooks for automatic code review:
 
 ```bash
 # Install hooks
-lrc install-hooks
+lrc hooks install
 
 # Uninstall hooks
-lrc uninstall-hooks
+lrc hooks uninstall
 
 # Force update existing lrc hooks
-lrc install-hooks --force
+lrc hooks install --force
 ```
 
 The hooks will:

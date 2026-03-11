@@ -1,6 +1,9 @@
-package main
+package ctrlkey
 
-import "github.com/HexmosTech/git-lrc/interactive/keybinding"
+import (
+	"github.com/HexmosTech/git-lrc/interactive/keybinding"
+	"github.com/HexmosTech/git-lrc/internal/decisionflow"
+)
 
 const (
 	ctrlCKey byte = keybinding.CtrlCKey
@@ -14,18 +17,18 @@ func mapControlKeyToDecision(key byte, allowEnter bool) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	return mapKeybindingDecisionToMain(code), true
+	return mapKeybindingDecisionToDecisionFlow(code), true
 }
 
-func mapKeybindingDecisionToMain(code int) int {
+func mapKeybindingDecisionToDecisionFlow(code int) int {
 	switch code {
 	case keybinding.DecisionAbort:
-		return decisionAbort
+		return decisionflow.DecisionAbort
 	case keybinding.DecisionSkip:
-		return decisionSkip
+		return decisionflow.DecisionSkip
 	case keybinding.DecisionVouch:
-		return decisionVouch
+		return decisionflow.DecisionVouch
 	default:
-		return decisionCommit
+		return decisionflow.DecisionCommit
 	}
 }

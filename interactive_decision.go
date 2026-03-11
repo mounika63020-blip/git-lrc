@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/HexmosTech/git-lrc/internal/decisionflow"
 	"github.com/urfave/cli/v2"
 )
 
@@ -24,8 +25,8 @@ func normalizeDecisionCode(code int) int {
 
 func precommitExitCodeForDecision(code int) int {
 	code = normalizeDecisionCode(code)
-	if code == decisionVouch {
-		return decisionSkip
+	if code == decisionflow.DecisionVouch {
+		return decisionflow.DecisionSkip
 	}
 	return code
 }
@@ -33,10 +34,10 @@ func precommitExitCodeForDecision(code int) int {
 func executeDecision(code int, message string, push bool, ctx decisionExecutionContext) error {
 	code = normalizeDecisionCode(code)
 	switch code {
-	case decisionAbort:
+	case decisionflow.DecisionAbort:
 		syncedPrintln("\n❌ Commit aborted by user")
-		return cli.Exit("", decisionAbort)
-	case decisionCommit:
+		return cli.Exit("", decisionflow.DecisionAbort)
+	case decisionflow.DecisionCommit:
 		if ctx.precommit {
 			syncedPrintln("\n✅ Proceeding with commit")
 		}
@@ -63,13 +64,13 @@ func executeDecision(code int, message string, push bool, ctx decisionExecutionC
 				_ = clearPushRequest(ctx.commitMsgPath)
 			}
 
-			return cli.Exit("", decisionCommit)
+			return cli.Exit("", decisionflow.DecisionCommit)
 		}
 		if err := runCommitAndMaybePush(finalMsg, push, ctx.verbose); err != nil {
 			return err
 		}
 		return nil
-	case decisionSkip:
+	case decisionflow.DecisionSkip:
 		syncedPrintln("\n⏭️  Review skipped, proceeding with commit")
 		if err := ensureAttestation("skipped", ctx.verbose, ctx.attestationWritten); err != nil {
 			return err
@@ -77,13 +78,13 @@ func executeDecision(code int, message string, push bool, ctx decisionExecutionC
 		if ctx.precommit {
 			_ = clearCommitMessageFile(ctx.commitMsgPath)
 			_ = clearPushRequest(ctx.commitMsgPath)
-			return cli.Exit("", decisionSkip)
+			return cli.Exit("", decisionflow.DecisionSkip)
 		}
 		if err := runCommitAndMaybePush(strings.TrimSpace(message), push, ctx.verbose); err != nil {
 			return err
 		}
 		return nil
-	case decisionVouch:
+	case decisionflow.DecisionVouch:
 		syncedPrintln("\n✅ Vouched, proceeding with commit")
 		if err := recordCoverageAndAttest("vouched", ctx.diffContent, ctx.reviewID, ctx.verbose, ctx.attestationWritten); err != nil {
 			return fmt.Errorf("vouch failed: %w", err)
@@ -91,7 +92,7 @@ func executeDecision(code int, message string, push bool, ctx decisionExecutionC
 		if ctx.precommit {
 			_ = clearCommitMessageFile(ctx.commitMsgPath)
 			_ = clearPushRequest(ctx.commitMsgPath)
-			return cli.Exit("", decisionSkip)
+			return cli.Exit("", decisionflow.DecisionSkip)
 		}
 		if err := runCommitAndMaybePush(strings.TrimSpace(message), push, ctx.verbose); err != nil {
 			return err

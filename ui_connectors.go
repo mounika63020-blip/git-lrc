@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/HexmosTech/git-lrc/internal/reviewopts"
+	"github.com/HexmosTech/git-lrc/internal/staticserve"
 	uicfg "github.com/HexmosTech/git-lrc/ui"
 	"github.com/urfave/cli/v2"
 )
@@ -50,7 +52,7 @@ func runUI(c *cli.Context) error {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/static/", http.StripPrefix("/static/", getStaticHandler()))
+	mux.Handle("/static/", http.StripPrefix("/static/", staticserve.GetStaticHandler()))
 	mux.HandleFunc("/", srv.handleIndex)
 	mux.HandleFunc("/api/ui/session-status", srv.handleSessionStatus)
 	mux.HandleFunc("/api/ui/auth/reauth", srv.handleReauthenticate)
@@ -84,5 +86,5 @@ func runUI(c *cli.Context) error {
 }
 
 func loadUIRuntimeConfig() (*uiRuntimeConfig, error) {
-	return uicfg.LoadRuntimeConfig(defaultAPIURL)
+	return uicfg.LoadRuntimeConfig(reviewopts.DefaultAPIURL)
 }

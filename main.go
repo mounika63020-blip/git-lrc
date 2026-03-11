@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -13,6 +12,11 @@ import (
 
 	cmdapp "github.com/HexmosTech/git-lrc/cmd"
 	"github.com/HexmosTech/git-lrc/internal/naming"
+	"github.com/HexmosTech/git-lrc/internal/reviewapi"
+	"github.com/HexmosTech/git-lrc/internal/reviewdb"
+	"github.com/HexmosTech/git-lrc/internal/reviewmodel"
+	"github.com/HexmosTech/git-lrc/internal/reviewopts"
+	"github.com/HexmosTech/git-lrc/internal/selfupdate"
 	reviewpkg "github.com/HexmosTech/git-lrc/review"
 	"github.com/urfave/cli/v2"
 )
@@ -31,53 +35,6 @@ var (
 	reviewStateMu      sync.RWMutex
 )
 
-// Decision codes for interactive review flow.
-const (
-	decisionCommit = 0 // proceed with commit
-	decisionAbort  = 1 // abort commit
-	decisionSkip   = 2 // skip review, proceed with commit
-	decisionVouch  = 4 // vouch for changes, proceed with commit
-)
-
-type interactivePhase int
-
-const (
-	phaseReviewRunning interactivePhase = iota
-	phaseReviewComplete
-)
-
-func actionAllowedInPhase(code int, phase interactivePhase) bool {
-	switch code {
-	case decisionAbort:
-		return true
-	case decisionSkip, decisionVouch:
-		return phase == phaseReviewRunning
-	case decisionCommit:
-		return phase == phaseReviewComplete
-	default:
-		return false
-	}
-}
-
-type decisionRequestError struct {
-	status  int
-	message string
-}
-
-func (e *decisionRequestError) Error() string {
-	return e.message
-}
-
-func validateInteractiveDecisionRequest(code int, message string, phase interactivePhase) error {
-	if !actionAllowedInPhase(code, phase) {
-		return &decisionRequestError{status: http.StatusConflict, message: "action not allowed in current review stage"}
-	}
-	if code == decisionCommit && strings.TrimSpace(message) == "" {
-		return &decisionRequestError{status: http.StatusBadRequest, message: "commit message is required in web UI"}
-	}
-	return nil
-}
-
 func isFakeReviewBuild() bool {
 	return reviewpkg.IsFakeReviewBuild(reviewMode)
 }
@@ -86,25 +43,25 @@ func fakeReviewWaitDuration() (time.Duration, error) {
 	return reviewpkg.FakeReviewWaitDuration(os.Getenv("LRC_FAKE_REVIEW_WAIT"))
 }
 
-func buildFakeSubmitResponse() diffReviewCreateResponse {
+func buildFakeSubmitResponse() reviewmodel.DiffReviewCreateResponse {
 	resp := reviewpkg.BuildFakeSubmitResponse(time.Now(), naming.GenerateFriendlyName())
-	return diffReviewCreateResponse{
+	return reviewmodel.DiffReviewCreateResponse{
 		ReviewID:     resp.ReviewID,
 		Status:       resp.Status,
 		FriendlyName: resp.FriendlyName,
 	}
 }
 
-func buildFakeCompletedResult() *diffReviewResponse {
+func buildFakeCompletedResult() *reviewmodel.DiffReviewResponse {
 	resp := reviewpkg.BuildFakeCompletedResult()
-	return &diffReviewResponse{
+	return &reviewmodel.DiffReviewResponse{
 		Status:  resp.Status,
 		Summary: resp.Summary,
-		Files:   []diffReviewFileResult{},
+		Files:   []reviewmodel.DiffReviewFileResult{},
 	}
 }
 
-func pollReviewFake(reviewID string, pollInterval, wait time.Duration, verbose bool, cancel <-chan struct{}) (*diffReviewResponse, error) {
+func pollReviewFake(reviewID string, pollInterval, wait time.Duration, verbose bool, cancel <-chan struct{}) (*reviewmodel.DiffReviewResponse, error) {
 	if pollInterval <= 0 {
 		pollInterval = 1 * time.Second
 	}
@@ -140,81 +97,17 @@ func pollReviewFake(reviewID string, pollInterval, wait time.Duration, verbose b
 		case <-cancel:
 			fmt.Printf("\r\n")
 			syncFileSafely(os.Stdout)
-			return nil, errPollCancelled
+			return nil, reviewapi.ErrPollCancelled
 		case <-ticker.C:
 		}
 	}
 }
 
-// diffReviewRequest models the POST payload to /api/v1/diff-review
-type diffReviewRequest struct {
-	DiffZipBase64 string `json:"diff_zip_base64"`
-	RepoName      string `json:"repo_name"`
-}
-
-// diffReviewResponse models the response from GET /api/v1/diff-review/:id
-type diffReviewResponse struct {
-	Status       string                 `json:"status"`
-	Summary      string                 `json:"summary,omitempty"`
-	Files        []diffReviewFileResult `json:"files,omitempty"`
-	Message      string                 `json:"message,omitempty"`
-	FriendlyName string                 `json:"friendly_name,omitempty"`
-}
-
-type diffReviewCreateResponse struct {
-	ReviewID     string `json:"review_id"`
-	Status       string `json:"status"`
-	FriendlyName string `json:"friendly_name,omitempty"`
-	UserEmail    string `json:"user_email,omitempty"`
-}
-
-type APIError struct {
-	StatusCode int
-	Body       string
-}
-
-func (e *APIError) Error() string {
-	return fmt.Sprintf("API returned status %d: %s", e.StatusCode, e.Body)
-}
-
-type diffReviewFileResult struct {
-	FilePath string              `json:"file_path"`
-	Hunks    []diffReviewHunk    `json:"hunks"`
-	Comments []diffReviewComment `json:"comments"`
-}
-
-type diffReviewHunk struct {
-	OldStartLine int    `json:"old_start_line"`
-	OldLineCount int    `json:"old_line_count"`
-	NewStartLine int    `json:"new_start_line"`
-	NewLineCount int    `json:"new_line_count"`
-	Content      string `json:"content"`
-}
-
-type diffReviewComment struct {
-	Line     int    `json:"line"`
-	Content  string `json:"content"`
-	Severity string `json:"severity"`
-	Category string `json:"category"`
-}
-
 const (
-	defaultAPIURL       = "http://localhost:8888"
-	defaultPollInterval = 2 * time.Second
-	defaultTimeout      = 5 * time.Minute
-	defaultOutputFormat = "pretty"
 	commitMessageFile   = "livereview_commit_message"
 	editorWrapperScript = "lrc_editor.sh"
 	editorBackupFile    = ".lrc_editor_backup"
 	pushRequestFile     = "livereview_push_request"
-
-	// B2 constants for self-update (read-only credentials)
-	b2KeyID      = "REDACTED_B2_KEY_ID"
-	b2AppKey     = "REDACTED_B2_APP_KEY"
-	b2BucketName = "hexmos"
-	b2BucketID   = "33d6ab74ac456875919a0f1d"
-	b2Prefix     = "lrc"
-	b2AuthURL    = "https://api.backblazeb2.com/b2api/v2/b2_authorize_account"
 )
 
 // highlightURL adds ANSI color to make served links stand out in terminals.
@@ -258,7 +151,7 @@ var baseFlags = []cli.Flag{
 	},
 	&cli.StringFlag{
 		Name:    "api-url",
-		Value:   defaultAPIURL,
+		Value:   reviewopts.DefaultAPIURL,
 		Usage:   "LiveReview API base URL",
 		EnvVars: []string{"LRC_API_URL"},
 	},
@@ -269,7 +162,7 @@ var baseFlags = []cli.Flag{
 	},
 	&cli.StringFlag{
 		Name:    "output",
-		Value:   defaultOutputFormat,
+		Value:   reviewopts.DefaultOutputFormat,
 		Usage:   "output format: pretty or json",
 		EnvVars: []string{"LRC_OUTPUT"},
 	},
@@ -326,13 +219,13 @@ var debugFlags = []cli.Flag{
 	},
 	&cli.DurationFlag{
 		Name:    "poll-interval",
-		Value:   defaultPollInterval,
+		Value:   reviewopts.DefaultPollInterval,
 		Usage:   "interval between status polls",
 		EnvVars: []string{"LRC_POLL_INTERVAL"},
 	},
 	&cli.DurationFlag{
 		Name:    "timeout",
-		Value:   defaultTimeout,
+		Value:   reviewopts.DefaultTimeout,
 		Usage:   "maximum time to wait for review completion",
 		EnvVars: []string{"LRC_TIMEOUT"},
 	},
@@ -354,6 +247,8 @@ var debugFlags = []cli.Flag{
 }
 
 func main() {
+	selfupdate.SetVersion(version)
+
 	app := cmdapp.BuildApp(version, buildTime, gitCommit, baseFlags, debugFlags, cmdapp.Handlers{
 		RunReviewSimple:       runReviewSimple,
 		RunReviewDebug:        runReviewDebug,
@@ -362,8 +257,8 @@ func main() {
 		RunHooksEnable:        runHooksEnable,
 		RunHooksDisable:       runHooksDisable,
 		RunHooksStatus:        runHooksStatus,
-		RunSelfUpdate:         runSelfUpdate,
-		RunReviewCleanup:      func(c *cli.Context) error { return runReviewDBCleanup(c.Bool("verbose")) },
+		RunSelfUpdate:         selfupdate.RunSelfUpdate,
+		RunReviewCleanup:      func(c *cli.Context) error { return reviewdb.RunReviewDBCleanup(c.Bool("verbose")) },
 		RunAttestationTrailer: runAttestationTrailer,
 		RunSetup:              runSetup,
 		RunUI:                 runUI,
@@ -374,33 +269,8 @@ func main() {
 	}
 }
 
-type reviewOptions struct {
-	repoName     string
-	diffSource   string
-	rangeVal     string
-	commitVal    string
-	diffFile     string
-	apiURL       string
-	apiKey       string
-	pollInterval time.Duration
-	timeout      time.Duration
-	output       string
-	saveBundle   string
-	saveJSON     string
-	saveText     string
-	saveHTML     string
-	serve        bool
-	port         int
-	verbose      bool
-	precommit    bool
-	skip         bool
-	force        bool
-	vouch        bool
-	initialMsg   string
-}
-
 func runReviewSimple(c *cli.Context) error {
-	opts, err := buildOptionsFromContext(c, false)
+	opts, err := reviewopts.BuildFromContext(c, false)
 	if err != nil {
 		return err
 	}
@@ -408,123 +278,11 @@ func runReviewSimple(c *cli.Context) error {
 }
 
 func runReviewDebug(c *cli.Context) error {
-	opts, err := buildOptionsFromContext(c, true)
+	opts, err := reviewopts.BuildFromContext(c, true)
 	if err != nil {
 		return err
 	}
 	return runReviewWithOptions(opts)
-}
-
-func buildOptionsFromContext(c *cli.Context, includeDebug bool) (reviewOptions, error) {
-	// Get initial commit message from file or environment variable
-	initialMsg := ""
-	if msgFile := os.Getenv("LRC_INITIAL_MESSAGE_FILE"); msgFile != "" {
-		if data, err := os.ReadFile(msgFile); err == nil {
-			initialMsg = strings.TrimRight(string(data), "\r\n")
-		}
-	} else {
-		initialMsg = strings.TrimRight(os.Getenv("LRC_INITIAL_MESSAGE"), "\r\n")
-	}
-
-	opts := reviewOptions{
-		repoName:   c.String("repo-name"),
-		rangeVal:   c.String("range"),
-		commitVal:  c.String("commit"),
-		diffFile:   c.String("diff-file"),
-		apiURL:     c.String("api-url"),
-		apiKey:     c.String("api-key"),
-		output:     c.String("output"),
-		saveHTML:   c.String("save-html"),
-		serve:      c.Bool("serve"),
-		port:       c.Int("port"),
-		verbose:    c.Bool("verbose"),
-		precommit:  c.Bool("precommit"),
-		skip:       c.Bool("skip"),
-		force:      c.Bool("force"),
-		vouch:      c.Bool("vouch"),
-		saveJSON:   c.String("save-json"),
-		saveText:   c.String("save-text"),
-		initialMsg: initialMsg,
-	}
-
-	if opts.skip || opts.vouch {
-		opts.precommit = false
-	}
-	if opts.skip && opts.vouch {
-		return reviewOptions{}, fmt.Errorf("cannot use --skip and --vouch together")
-	}
-
-	staged := c.Bool("staged")
-	diffSource := c.String("diff-source")
-
-	if opts.diffFile != "" {
-		diffSource = "file"
-	} else if opts.commitVal != "" {
-		diffSource = "commit"
-		// Commit mode is for post-commit reviews - disable precommit/skip features
-		opts.precommit = false
-		opts.skip = false
-		// Auto-enable serve mode for post-commit reviews (user can view in browser)
-		// Only if not explicitly set by user via flags
-		if !c.IsSet("serve") && !c.IsSet("save-html") {
-			opts.serve = true
-		}
-	} else if opts.rangeVal != "" {
-		diffSource = "range"
-	} else if staged {
-		diffSource = "staged"
-	}
-
-	if diffSource == "" {
-		diffSource = "staged"
-	}
-
-	opts.diffSource = diffSource
-
-	if includeDebug {
-		opts.pollInterval = c.Duration("poll-interval")
-		opts.timeout = c.Duration("timeout")
-		opts.saveBundle = c.String("save-bundle")
-	} else {
-		opts.pollInterval = defaultPollInterval
-		opts.timeout = defaultTimeout
-	}
-
-	if opts.apiURL == "" {
-		opts.apiURL = defaultAPIURL
-	}
-
-	if opts.output == "" {
-		opts.output = defaultOutputFormat
-	}
-
-	return opts, nil
-}
-
-// applyDefaultHTMLServe enables HTML saving/serving when the user runs with defaults.
-// It only triggers when no HTML path or serve flag was provided and the output format is the default.
-func applyDefaultHTMLServe(opts *reviewOptions) (string, error) {
-	// If HTML path already set or output format is not HTML, nothing to do
-	if opts.saveHTML != "" || opts.output != defaultOutputFormat {
-		return opts.saveHTML, nil
-	}
-
-	// Serve is enabled but no HTML path - create temp file
-	if opts.serve {
-		tmpFile, err := os.CreateTemp("", "lrc-review-*.html")
-		if err != nil {
-			return "", fmt.Errorf("failed to create temporary HTML file: %w", err)
-		}
-
-		if err := tmpFile.Close(); err != nil {
-			return "", fmt.Errorf("failed to prepare temporary HTML file: %w", err)
-		}
-
-		opts.saveHTML = tmpFile.Name()
-		return opts.saveHTML, nil
-	}
-
-	return "", nil
 }
 
 // pickServePort tries the requested port, then increments by 1 up to maxTries to find a free port.

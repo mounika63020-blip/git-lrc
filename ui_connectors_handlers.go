@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/HexmosTech/git-lrc/internal/reviewopts"
+	"github.com/HexmosTech/git-lrc/internal/staticserve"
 	uicfg "github.com/HexmosTech/git-lrc/ui"
 )
 
@@ -36,7 +38,7 @@ func (s *connectorManagerServer) handleSessionStatus(w http.ResponseWriter, r *h
 	s.mu.Unlock()
 
 	if apiURL == "" {
-		apiURL = defaultAPIURL
+		apiURL = reviewopts.DefaultAPIURL
 	}
 
 	claims := decodeJWTClaims(jwt)
@@ -186,7 +188,7 @@ func (s *connectorManagerServer) handleIndex(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	htmlBytes, err := staticFiles.ReadFile("static/ui-connectors.html")
+	htmlBytes, err := staticserve.ReadFile("ui-connectors.html")
 	if err != nil {
 		http.Error(w, "failed to load UI", http.StatusInternalServerError)
 		return
