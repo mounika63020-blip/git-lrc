@@ -1,4 +1,4 @@
-.PHONY: build build-all build-local build-local-test run run-fake-review bump release clean test testall test-pkg upload-secrets download-secrets security-govulncheck security-govulncheck-json security-osv security-triage
+.PHONY: build build-all build-local build-local-test run run-fake-review bump release clean test testall test-pkg upload-secrets download-secrets security-govulncheck security-govulncheck-json security-osv security-triage security-gitleaks security-b2-audit security-b2-cleanup-plan security-b2-cleanup-apply security-publish-release-manifest security-secret-regression
 
 # Go parameters
 GOCMD=go
@@ -148,3 +148,52 @@ security-triage: security-osv
 		--md security_issues/osv-triage-latest.md
 	@echo "✅ Wrote security_issues/osv-triage-latest.csv"
 	@echo "✅ Wrote security_issues/osv-triage-latest.md"
+
+# Run gitleaks and emit a dated CSV artifact under security_issues/.
+security-gitleaks:
+	@command -v gitleaks >/dev/null 2>&1 || { \
+		echo "❌ gitleaks not found. Install from https://github.com/gitleaks/gitleaks"; \
+		exit 1; \
+	}
+	@mkdir -p security_issues
+	@gitleaks git . -f csv -r security_issues/gitleaks-$(shell date +%d-%m-%Y).csv
+	@echo "✅ Wrote security_issues/gitleaks-$(shell date +%d-%m-%Y).csv"
+
+# Audit all B2 object versions under lrc/ using B2 APIs.
+security-b2-audit:
+	@mkdir -p security_issues
+	@/bin/python scripts/b2_release_audit.py \
+		--prefix lrc/ \
+		--output security_issues/b2-release-audit-$(shell date +%d-%m-%Y).json
+
+# Generate a dry-run deletion plan for unnecessary B2 object versions under lrc/.
+security-b2-cleanup-plan:
+	@mkdir -p security_issues
+	@/bin/python scripts/b2_release_cleanup.py \
+		--prefix lrc/ \
+		--output security_issues/b2-release-cleanup-plan-$(shell date +%d-%m-%Y).json
+
+# Apply B2 version cleanup plan (destructive). Requires B2 key with deleteFiles capability.
+security-b2-cleanup-apply:
+	@mkdir -p security_issues
+	@/bin/python scripts/b2_release_cleanup.py \
+		--prefix lrc/ \
+		--output security_issues/b2-release-cleanup-apply-$(shell date +%d-%m-%Y).json \
+		--apply
+
+# Backfill or refresh public release manifest from existing B2 release objects.
+security-publish-release-manifest:
+	@/bin/python scripts/publish_release_manifest.py
+
+# Fail if known leaked B2 literals reappear in tracked source/docs/scripts.
+security-secret-regression:
+	@! rg -n --hidden --glob '!.git/**' --glob '!security_issues/**' --glob '!Makefile' \
+		'K005DV\+hNk6/fdQr8oXHmRsdo8U2YAU|REDACTED_B2_KEY_ID' \
+		. >/tmp/lrc-secret-regression.txt || { \
+		echo "❌ Secret regression detected:"; \
+		cat /tmp/lrc-secret-regression.txt; \
+		rm -f /tmp/lrc-secret-regression.txt; \
+		exit 1; \
+	}
+	@rm -f /tmp/lrc-secret-regression.txt
+	@echo "✅ No known leaked B2 literals detected in tracked source/docs/scripts"

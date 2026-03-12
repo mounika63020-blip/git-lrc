@@ -16,7 +16,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import requests
@@ -39,6 +39,7 @@ PLATFORMS = [
 # B2 configuration
 B2_API_BASE = "https://api.backblazeb2.com"
 B2_UPLOAD_PATH_PREFIX = "lrc"  # Files go to hexmos/lrc/<version>/
+RELEASE_MANIFEST_NAME = "latest.json"  # Published at hexmos/lrc/latest.json
 
 # These are loaded from .env file (see .env.example)
 B2_ENV_VARS = ["B2_KEY_ID", "B2_APP_KEY", "B2_BUCKET_NAME", "B2_BUCKET_ID"]
@@ -472,15 +473,58 @@ class LRCBuilder:
                 upload_data = self.get_upload_url(auth_data, bucket_id)
                 b2_sums_name = f"{B2_UPLOAD_PATH_PREFIX}/{version}/{platform_dir}/SHA256SUMS"
                 self.upload_file_to_b2(upload_data, sums_file, b2_sums_name)
+
+        manifest = self.build_release_manifest(files, version)
+        manifest_path = self.dist_dir / RELEASE_MANIFEST_NAME
+        with open(manifest_path, "w") as mf:
+            json.dump(manifest, mf, indent=2)
+            mf.write("\n")
+
+        upload_data = self.get_upload_url(auth_data, bucket_id)
+        manifest_b2_name = f"{B2_UPLOAD_PATH_PREFIX}/{RELEASE_MANIFEST_NAME}"
+        self.upload_file_to_b2(upload_data, manifest_path, manifest_b2_name)
         
         # Construct public download URLs
         download_base = f"https://f005.backblazeb2.com/file/{os.environ['B2_BUCKET_NAME']}/{B2_UPLOAD_PATH_PREFIX}/{version}"
         
         self.log(f"\n✓ Upload complete! Files available at:", force=True)
         self.log(f"  {download_base}/", force=True)
+        self.log(f"  {download_base}/{RELEASE_MANIFEST_NAME}", force=True)
         self.log(f"\nPlatform directories:", force=True)
         for _, platform_dir in files:
             self.log(f"  {download_base}/{platform_dir}/", force=True)
+
+    def build_release_manifest(
+        self, files: List[Tuple[Path, str]], version: str
+    ) -> Dict[str, Any]:
+        """Build a public release manifest consumed by installers and self-update."""
+        bucket_name = os.environ["B2_BUCKET_NAME"]
+        download_base = (
+            f"https://f005.backblazeb2.com/file/{bucket_name}/{B2_UPLOAD_PATH_PREFIX}"
+        )
+
+        platforms: Dict[str, Dict[str, str]] = {}
+        for binary_path, platform_dir in files:
+            checksum = hashlib.sha256(binary_path.read_bytes()).hexdigest()
+            platforms[platform_dir] = {
+                "binary": f"{B2_UPLOAD_PATH_PREFIX}/{version}/{platform_dir}/{binary_path.name}",
+                "sha256sums": f"{B2_UPLOAD_PATH_PREFIX}/{version}/{platform_dir}/SHA256SUMS",
+                "sha256": checksum,
+            }
+
+        return {
+            "schema_version": 1,
+            "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "latest_version": version,
+            "bucket": bucket_name,
+            "prefix": B2_UPLOAD_PATH_PREFIX,
+            "download_base": download_base,
+            "releases": {
+                version: {
+                    "platforms": platforms,
+                }
+            },
+        }
 
     def cmd_build(self, args):
         """Build lrc binaries"""

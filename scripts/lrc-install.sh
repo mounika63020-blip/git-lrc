@@ -143,11 +143,8 @@ fi
 GIT_BIN="$(command -v git)"
 GIT_DIR="$(dirname "$GIT_BIN")"
 
-# B2 read-only credentials (hardcoded)
-B2_KEY_ID="REDACTED_B2_KEY_ID"
-B2_APP_KEY="REDACTED_B2_APP_KEY"
-B2_BUCKET_NAME="hexmos"
-B2_PREFIX="lrc"
+# Public release manifest URL
+MANIFEST_URL="https://f005.backblazeb2.com/file/hexmos/lrc/latest.json"
 
 # Install location (user-writable, no sudo needed)
 INSTALL_DIR="$HOME/.local/bin"
@@ -328,75 +325,33 @@ fi
 # ---------------------------------------------------------------------------
 mkdir -p "$INSTALL_DIR"
 
-# Resolve latest release metadata from remote repository
+# Resolve latest release from public manifest
 echo -n "Checking remote repository for latest lrc release... "
-AUTH_RESPONSE=$(curl -s -u "${B2_KEY_ID}:${B2_APP_KEY}" \
-    "https://api.backblazeb2.com/b2api/v2/b2_authorize_account")
-
-if [ $? -ne 0 ] || [ -z "$AUTH_RESPONSE" ]; then
+MANIFEST_RESPONSE=$(curl -fsSL "${MANIFEST_URL}")
+if [ $? -ne 0 ] || [ -z "$MANIFEST_RESPONSE" ]; then
     echo -e "${RED}FAIL${NC}"
-    echo -e "${RED}Error: Failed to fetch release metadata from remote repository${NC}"
+    echo -e "${RED}Error: Failed to fetch public release manifest${NC}"
     exit 1
 fi
 
-# Parse JSON (handle multiline)
-AUTH_TOKEN=$(echo "$AUTH_RESPONSE" | tr -d '\n' | sed -n 's/.*"authorizationToken": "\([^"]*\)".*/\1/p')
-API_URL=$(echo "$AUTH_RESPONSE" | tr -d '\n' | sed -n 's/.*"apiUrl": "\([^"]*\)".*/\1/p')
-DOWNLOAD_URL=$(echo "$AUTH_RESPONSE" | tr -d '\n' | sed -n 's/.*"downloadUrl": "\([^"]*\)".*/\1/p')
+LATEST_VERSION=$(echo "$MANIFEST_RESPONSE" | tr -d '\n' | sed -n 's/.*"latest_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+DOWNLOAD_BASE=$(echo "$MANIFEST_RESPONSE" | tr -d '\n' | sed -n 's/.*"download_base"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
-if [ -z "$AUTH_TOKEN" ] || [ -z "$API_URL" ]; then
+if [ -z "$LATEST_VERSION" ] || [ -z "$DOWNLOAD_BASE" ]; then
     echo -e "${RED}FAIL${NC}"
-    echo -e "${RED}Error: Failed to parse release metadata response${NC}"
-    echo "Response: $AUTH_RESPONSE"
+    echo -e "${RED}Error: Release manifest is missing latest_version or download_base${NC}"
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"
-
-# List files in the lrc/ folder to find versions
-echo -n "Finding latest version... "
-LIST_RESPONSE=$(curl -s -X POST "${API_URL}/b2api/v2/b2_list_file_names" \
-    -H "Authorization: ${AUTH_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "{
-        \"bucketId\": \"33d6ab74ac456875919a0f1d\",
-        \"startFileName\": \"${B2_PREFIX}/\",
-        \"prefix\": \"${B2_PREFIX}/\",
-        \"maxFileCount\": 10000
-    }")
-
-if [ $? -ne 0 ] || [ -z "$LIST_RESPONSE" ]; then
-    echo -e "${RED}FAIL${NC}"
-    echo -e "${RED}Error: Failed to list release files from remote repository${NC}"
-    exit 1
-fi
-
-# Extract unique versions (looking for paths like lrc/vX.Y.Z/)
-VERSIONS=$(echo "$LIST_RESPONSE" | tr -d '\n' | grep -o "\"fileName\": *\"${B2_PREFIX}/v[0-9][^/]*/[^\"]*\"" | \
-    sed 's|.*"fileName": *"'${B2_PREFIX}'/\(v[0-9][^/]*\)/.*|\1|' | sort -u | sort -V | tail -1)
-
-if [ -z "$VERSIONS" ]; then
-    # Fallback: look for files in version directories
-    VERSIONS=$(echo "$LIST_RESPONSE" | grep -o "\"fileName\":\"${B2_PREFIX}/v[^/]*/[^\"]*\"" | \
-        sed 's|.*"'${B2_PREFIX}'/\(v[^/]*\)/.*|\1|' | sort -uV | tail -1)
-fi
-
-if [ -z "$VERSIONS" ]; then
-    echo -e "${RED}FAIL${NC}"
-    echo -e "${RED}Error: No versions found in ${B2_BUCKET_NAME}/${B2_PREFIX}/${NC}"
-    exit 1
-fi
-
-LATEST_VERSION="$VERSIONS"
 echo -e "${GREEN}OK${NC} Latest version: ${LATEST_VERSION}"
 
-# Construct download URL
+# Construct download URL from manifest metadata
 BINARY_NAME="lrc"
-DOWNLOAD_PATH="${B2_PREFIX}/${LATEST_VERSION}/${PLATFORM}/${BINARY_NAME}"
-FULL_URL="${DOWNLOAD_URL}/file/${B2_BUCKET_NAME}/${DOWNLOAD_PATH}"
+FULL_URL="${DOWNLOAD_BASE}/${LATEST_VERSION}/${PLATFORM}/${BINARY_NAME}"
 
 echo -n "Downloading lrc ${LATEST_VERSION} for ${PLATFORM}... "
 TMP_FILE=$(mktemp)
-HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TMP_FILE" -H "Authorization: ${AUTH_TOKEN}" "$FULL_URL")
+HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TMP_FILE" "$FULL_URL")
 
 if [ "$HTTP_CODE" != "200" ]; then
     echo -e "${RED}FAIL${NC}"

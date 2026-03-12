@@ -1,7 +1,6 @@
 package selfupdate
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,12 +29,8 @@ import (
 var version = "unknown"
 
 const (
-	b2KeyID      = "REDACTED_B2_KEY_ID"
-	b2AppKey     = "REDACTED_B2_APP_KEY"
-	b2BucketName = "hexmos"
-	b2BucketID   = "33d6ab74ac456875919a0f1d"
-	b2Prefix     = "lrc"
-	b2AuthURL    = "https://api.backblazeb2.com/b2api/v2/b2_authorize_account"
+	releaseManifestURL = "https://f005.backblazeb2.com/file/hexmos/lrc/latest.json"
+	publicDownloadBase = "https://f005.backblazeb2.com/file/hexmos"
 )
 
 // =============================================================================
@@ -44,15 +39,27 @@ const (
 
 // Pre-compiled regexes for version parsing
 var (
-	semverRe        = regexp.MustCompile(`v?(\d+)\.(\d+)\.(\d+)`)
-	b2VersionPathRe = regexp.MustCompile(`^lrc/(v\d+\.\d+\.\d+)/`)
+	semverRe = regexp.MustCompile(`v?(\d+)\.(\d+)\.(\d+)`)
 )
 
-// b2AuthResponse models the B2 authorization response
-type b2AuthResponse struct {
-	AuthorizationToken string `json:"authorizationToken"`
-	APIURL             string `json:"apiUrl"`
-	DownloadURL        string `json:"downloadUrl"`
+type releasePlatformArtifact struct {
+	Binary     string `json:"binary"`
+	SHA256Sums string `json:"sha256sums"`
+	SHA256     string `json:"sha256"`
+}
+
+type releaseManifestVersion struct {
+	Platforms map[string]releasePlatformArtifact `json:"platforms"`
+}
+
+type releaseManifest struct {
+	SchemaVersion int                               `json:"schema_version"`
+	GeneratedAt   string                            `json:"generated_at"`
+	LatestVersion string                            `json:"latest_version"`
+	Bucket        string                            `json:"bucket"`
+	Prefix        string                            `json:"prefix"`
+	DownloadBase  string                            `json:"download_base"`
+	Releases      map[string]releaseManifestVersion `json:"releases"`
 }
 
 type pendingUpdateState struct {
@@ -85,21 +92,6 @@ func newSelfUpdateHTTPClient(timeout time.Duration) *http.Client {
 			return nil
 		},
 	}
-}
-
-// b2ListRequest models the B2 list files request
-type b2ListRequest struct {
-	BucketID      string `json:"bucketId"`
-	StartFileName string `json:"startFileName"`
-	Prefix        string `json:"prefix"`
-	MaxFileCount  int    `json:"maxFileCount"`
-}
-
-// b2ListResponse models the B2 list files response
-type b2ListResponse struct {
-	Files []struct {
-		FileName string `json:"fileName"`
-	} `json:"files"`
 }
 
 // semverParse extracts major, minor, patch from a version string like "v0.1.14"
@@ -146,89 +138,44 @@ func semverCompare(a, b string) (int, error) {
 	return 0, nil
 }
 
-// fetchLatestVersionFromB2 queries B2 to find the latest lrc version
-func fetchLatestVersionFromB2() (string, error) {
-	authReq, err := http.NewRequest("GET", b2AuthURL, nil)
+func fetchReleaseManifest(client *http.Client) (*releaseManifest, error) {
+	manifestReq, err := http.NewRequest("GET", releaseManifestURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create auth request: %w", err)
+		return nil, fmt.Errorf("failed to create manifest request: %w", err)
 	}
-	authReq.SetBasicAuth(b2KeyID, b2AppKey)
 
+	resp, err := client.Do(manifestReq)
+	if err != nil {
+		return nil, fmt.Errorf("manifest request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("manifest request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var manifest releaseManifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return nil, fmt.Errorf("failed to decode release manifest: %w", err)
+	}
+	if strings.TrimSpace(manifest.LatestVersion) == "" {
+		return nil, fmt.Errorf("release manifest is missing latest_version")
+	}
+	if manifest.Releases == nil {
+		return nil, fmt.Errorf("release manifest is missing releases")
+	}
+
+	return &manifest, nil
+}
+
+func fetchLatestVersionFromManifest() (string, error) {
 	client := newSelfUpdateHTTPClient(30 * time.Second)
-	authResp, err := client.Do(authReq)
+	manifest, err := fetchReleaseManifest(client)
 	if err != nil {
-		return "", fmt.Errorf("B2 auth request failed: %w", err)
+		return "", err
 	}
-	defer authResp.Body.Close()
-
-	if authResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(authResp.Body)
-		return "", fmt.Errorf("B2 auth failed with status %d: %s", authResp.StatusCode, string(body))
-	}
-
-	var authData b2AuthResponse
-	if err := json.NewDecoder(authResp.Body).Decode(&authData); err != nil {
-		return "", fmt.Errorf("failed to decode B2 auth response: %w", err)
-	}
-
-	listURL := authData.APIURL + "/b2api/v2/b2_list_file_names"
-	listReqBody := b2ListRequest{
-		BucketID:      b2BucketID,
-		StartFileName: b2Prefix + "/",
-		Prefix:        b2Prefix + "/",
-		MaxFileCount:  1000,
-	}
-	listBodyBytes, err := json.Marshal(listReqBody)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal list request: %w", err)
-	}
-
-	listReq, err := http.NewRequest("POST", listURL, bytes.NewReader(listBodyBytes))
-	if err != nil {
-		return "", fmt.Errorf("failed to create list request: %w", err)
-	}
-	listReq.Header.Set("Authorization", authData.AuthorizationToken)
-	listReq.Header.Set("Content-Type", "application/json")
-
-	listResp, err := client.Do(listReq)
-	if err != nil {
-		return "", fmt.Errorf("B2 list request failed: %w", err)
-	}
-	defer listResp.Body.Close()
-
-	if listResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(listResp.Body)
-		return "", fmt.Errorf("B2 list failed with status %d: %s", listResp.StatusCode, string(body))
-	}
-
-	var listData b2ListResponse
-	if err := json.NewDecoder(listResp.Body).Decode(&listData); err != nil {
-		return "", fmt.Errorf("failed to decode B2 list response: %w", err)
-	}
-
-	seen := make(map[string]bool)
-	var latestVersion string
-
-	for _, f := range listData.Files {
-		match := b2VersionPathRe.FindStringSubmatch(f.FileName)
-		if match != nil {
-			v := match[1]
-			if !seen[v] {
-				seen[v] = true
-				if latestVersion == "" {
-					latestVersion = v
-				} else if cmp, err := semverCompare(v, latestVersion); err == nil && cmp > 0 {
-					latestVersion = v
-				}
-			}
-		}
-	}
-
-	if latestVersion == "" {
-		return "", fmt.Errorf("no versions found in B2 bucket")
-	}
-
-	return latestVersion, nil
+	return manifest.LatestVersion, nil
 }
 
 func selfUpdateStateDir() (string, error) {
@@ -572,37 +519,7 @@ func selfUpdatePlatformID() (string, error) {
 	return fmt.Sprintf("%s-%s", platformOS, platformArch), nil
 }
 
-func b2Authorize(client *http.Client) (*b2AuthResponse, error) {
-	authReq, err := http.NewRequest("GET", b2AuthURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create auth request: %w", err)
-	}
-	authReq.SetBasicAuth(b2KeyID, b2AppKey)
-
-	authResp, err := client.Do(authReq)
-	if err != nil {
-		return nil, fmt.Errorf("B2 auth request failed: %w", err)
-	}
-	defer authResp.Body.Close()
-
-	if authResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(authResp.Body)
-		return nil, fmt.Errorf("B2 auth failed with status %d: %s", authResp.StatusCode, string(body))
-	}
-
-	var authData b2AuthResponse
-	if err := json.NewDecoder(authResp.Body).Decode(&authData); err != nil {
-		return nil, fmt.Errorf("failed to decode B2 auth response: %w", err)
-	}
-
-	if strings.TrimSpace(authData.AuthorizationToken) == "" || strings.TrimSpace(authData.DownloadURL) == "" {
-		return nil, fmt.Errorf("B2 auth response missing required fields")
-	}
-
-	return &authData, nil
-}
-
-func downloadVersionBinaryFromB2(versionTag string) (string, error) {
+func downloadVersionBinaryFromManifest(versionTag string) (string, error) {
 	platformID, err := selfUpdatePlatformID()
 	if err != nil {
 		return "", err
@@ -614,19 +531,35 @@ func downloadVersionBinaryFromB2(versionTag string) (string, error) {
 	}
 
 	client := newSelfUpdateHTTPClient(60 * time.Second)
-	authData, err := b2Authorize(client)
+	manifest, err := fetchReleaseManifest(client)
 	if err != nil {
 		return "", err
 	}
 
-	downloadPath := fmt.Sprintf("%s/%s/%s/%s", b2Prefix, versionTag, platformID, binaryName)
-	fullURL := fmt.Sprintf("%s/file/%s/%s", authData.DownloadURL, b2BucketName, downloadPath)
+	versionInfo, ok := manifest.Releases[versionTag]
+	if !ok {
+		return "", fmt.Errorf("release manifest does not include version %s", versionTag)
+	}
+	artifact, ok := versionInfo.Platforms[platformID]
+	if !ok {
+		return "", fmt.Errorf("release manifest does not include platform %s for %s", platformID, versionTag)
+	}
+	if strings.TrimSpace(artifact.Binary) == "" {
+		return "", fmt.Errorf("release manifest binary path is empty for %s/%s", versionTag, platformID)
+	}
+	if !strings.HasSuffix(artifact.Binary, binaryName) {
+		return "", fmt.Errorf("release manifest binary path %q does not match expected binary %q", artifact.Binary, binaryName)
+	}
+
+	fullURL := artifact.Binary
+	if !strings.HasPrefix(fullURL, "http://") && !strings.HasPrefix(fullURL, "https://") {
+		fullURL = fmt.Sprintf("%s/%s", strings.TrimRight(publicDownloadBase, "/"), strings.TrimLeft(artifact.Binary, "/"))
+	}
 
 	req, err := http.NewRequest("GET", fullURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create download request: %w", err)
 	}
-	req.Header.Set("Authorization", authData.AuthorizationToken)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -690,7 +623,7 @@ func stageUpdateVersion(versionTag string, force bool, verbose bool) (*pendingUp
 		}
 	}
 
-	stagedBinaryPath, err := downloadVersionBinaryFromB2(versionTag)
+	stagedBinaryPath, err := downloadVersionBinaryFromManifest(versionTag)
 	if err != nil {
 		return nil, err
 	}
@@ -925,7 +858,7 @@ func startAutoUpdateCheck(verbose bool) {
 				}
 			}()
 
-			latestVersion, err := fetchLatestVersionFromB2()
+			latestVersion, err := fetchLatestVersionFromManifest()
 			if err != nil {
 				if verbose {
 					log.Printf("auto-update check failed: %v", err)
@@ -985,7 +918,7 @@ func runSelfUpdate(c *cli.Context) error {
 	fmt.Printf("Current version: %s%s%s\n", colorCyan, version, colorReset)
 	fmt.Println("Checking for updates...")
 
-	latestVersion, err := fetchLatestVersionFromB2()
+	latestVersion, err := fetchLatestVersionFromManifest()
 	if err != nil {
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}

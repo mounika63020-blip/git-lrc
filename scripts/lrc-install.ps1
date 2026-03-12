@@ -245,11 +245,8 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 $GIT_BIN = (Get-Command git).Source
 $GIT_DIR = Split-Path -Parent $GIT_BIN
 
-# B2 read-only credentials (hardcoded)
-$B2_KEY_ID = "REDACTED_B2_KEY_ID"
-$B2_APP_KEY = "REDACTED_B2_APP_KEY"
-$B2_BUCKET_NAME = "hexmos"
-$B2_PREFIX = "lrc"
+# Public release manifest URL
+$MANIFEST_URL = "https://f005.backblazeb2.com/file/hexmos/lrc/latest.json"
 
 Write-Host "lrc Installer" -ForegroundColor Cyan
 Write-Host "================" -ForegroundColor Cyan
@@ -274,132 +271,35 @@ if (-not (Test-Path $INSTALL_DIR)) {
     New-Item -ItemType Directory -Path $INSTALL_DIR -Force | Out-Null
 }
 
-# Resolve latest release metadata from remote repository
+# Resolve latest release from public manifest
 Write-Host -NoNewline "Checking remote repository for latest lrc release... "
-$authString = "${B2_KEY_ID}:${B2_APP_KEY}"
-$authBytes = [System.Text.Encoding]::UTF8.GetBytes($authString)
-$authBase64 = [System.Convert]::ToBase64String($authBytes)
-
 try {
-    $authResponse = Invoke-RestMethod -Uri "https://api.backblazeb2.com/b2api/v2/b2_authorize_account" `
-        -Method Get `
-        -Headers @{ "Authorization" = "Basic $authBase64" } `
-        -UseBasicParsing
+    $manifest = Invoke-RestMethod -Uri $MANIFEST_URL -Method Get -UseBasicParsing
     Write-Host "$OK" -ForegroundColor Green
 } catch {
     Write-Host "$FAIL" -ForegroundColor Red
-    Write-Host "Error: Failed to fetch release metadata from remote repository" -ForegroundColor Red
+    Write-Host "Error: Failed to fetch public release manifest" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     exit 1
 }
 
-$AUTH_TOKEN = $authResponse.authorizationToken
-$API_URL = $authResponse.apiUrl
-$DOWNLOAD_URL = $authResponse.downloadUrl
-
-# Detect environment for header handling
-$isCore = ($PSVersionTable.PSVersion.Major -ge 6)
-$b2Session = $null
-
-# List files in the lrc/ folder to find versions
-Write-Host -NoNewline "Finding latest version... "
-try {
-    $listBody = @{
-        bucketId = "33d6ab74ac456875919a0f1d"
-        startFileName = "$B2_PREFIX/"
-        prefix = "$B2_PREFIX/"
-        maxFileCount = 10000
-    } | ConvertTo-Json
-
-    if ($isCore) {
-        # PowerShell Core: Use HttpClient to bypass strict header validation for B2 tokens
-        $client = New-Object System.Net.Http.HttpClient
-        [void]$client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $AUTH_TOKEN)
-        
-        $content = New-Object System.Net.Http.StringContent($listBody, [System.Text.Encoding]::UTF8, "application/json")
-        $response = $client.PostAsync("$API_URL/b2api/v2/b2_list_file_names", $content).GetAwaiter().GetResult()
-        
-        if (-not $response.IsSuccessStatusCode) {
-            throw "HTTP Status: $($response.StatusCode)"
-        }
-        
-        $jsonStr = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        $listResponse = $jsonStr | ConvertFrom-Json
-        $client.Dispose()
-    } else {
-        # Windows PowerShell: Use WebRequestSession (allows raw headers in WebHeaderCollection)
-        $b2Session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-        $b2Session.Headers.Add("Authorization", $AUTH_TOKEN)
-
-        $listResponse = Invoke-RestMethod -Uri "$API_URL/b2api/v2/b2_list_file_names" `
-            -Method Post `
-            -WebSession $b2Session `
-            -ContentType "application/json" `
-            -Body $listBody `
-            -UseBasicParsing
-    }
-} catch {
+$LATEST_VERSION = [string]$manifest.latest_version
+$DOWNLOAD_BASE = [string]$manifest.download_base
+if ([string]::IsNullOrWhiteSpace($LATEST_VERSION) -or [string]::IsNullOrWhiteSpace($DOWNLOAD_BASE)) {
     Write-Host "$FAIL" -ForegroundColor Red
-    Write-Host "Error: Failed to list release files from remote repository" -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host "Error: Release manifest is missing latest_version or download_base" -ForegroundColor Red
     exit 1
-}
-
-# Extract versions that have a binary for our platform
-# Only consider versions where lrc/<version>/<platform>/lrc.exe exists
-# Use proper semantic version sorting (not lexicographic)
-$versions = $listResponse.files |
-    Where-Object { $_.fileName -match "^$B2_PREFIX/v[0-9]+\.[0-9]+\.[0-9]+/$PLATFORM/lrc\.exe$" } |
-    ForEach-Object {
-        if ($_.fileName -match "^$B2_PREFIX/(v[0-9]+\.[0-9]+\.[0-9]+)/") {
-            $matches[1]
-        }
-    } |
-    Select-Object -Unique |
-    Sort-Object { [Version]($_ -replace '^v','') } -Descending
-
-if (-not $versions -or ($versions | Measure-Object).Count -eq 0) {
-    Write-Host "$FAIL" -ForegroundColor Red
-    Write-Host "Error: No versions found in $B2_BUCKET_NAME/$B2_PREFIX/" -ForegroundColor Red
-    exit 1
-}
-
-# Handle both array and single-value returns
-if ($versions -is [array]) {
-    $LATEST_VERSION = $versions[0]
-} else {
-    $LATEST_VERSION = $versions
 }
 Write-Host "$OK Latest version: $LATEST_VERSION" -ForegroundColor Green
 
-# Construct download URL
+# Construct download URL from manifest metadata
 $BINARY_NAME = "lrc.exe"
-$DOWNLOAD_PATH = "$B2_PREFIX/$LATEST_VERSION/$PLATFORM/$BINARY_NAME"
-$FULL_URL = "$DOWNLOAD_URL/file/$B2_BUCKET_NAME/$DOWNLOAD_PATH"
+$FULL_URL = "$DOWNLOAD_BASE/$LATEST_VERSION/$PLATFORM/$BINARY_NAME"
 
 Write-Host -NoNewline "Downloading lrc $LATEST_VERSION for $PLATFORM... "
 $TMP_FILE = [System.IO.Path]::GetTempFileName()
 try {
-    if ($isCore) {
-        $client = New-Object System.Net.Http.HttpClient
-        [void]$client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $AUTH_TOKEN)
-        
-        $response = $client.GetAsync($FULL_URL, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-        
-        if (-not $response.IsSuccessStatusCode) {
-             throw "HTTP Status: $($response.StatusCode)"
-        }
-        
-        $fileStream = [System.IO.File]::Create($TMP_FILE)
-        try {
-            $response.Content.CopyToAsync($fileStream).GetAwaiter().GetResult()
-        } finally {
-            $fileStream.Close()
-            $client.Dispose()
-        }
-    } else {
-        Invoke-WebRequest -Uri $FULL_URL -OutFile $TMP_FILE -UseBasicParsing -WebSession $b2Session
-    }
+    Invoke-WebRequest -Uri $FULL_URL -OutFile $TMP_FILE -UseBasicParsing
     Write-Host "$OK" -ForegroundColor Green
 } catch {
     Write-Host "$FAIL" -ForegroundColor Red
