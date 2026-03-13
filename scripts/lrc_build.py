@@ -413,8 +413,8 @@ class LRCBuilder:
         with open(file_path, "rb") as f:
             file_data = f.read()
         
-        # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
         # Backblaze B2 requires SHA1 in X-Bz-Content-Sha1 for upload integrity checks.
+        # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
         sha1_hash = hashlib.sha1(file_data).hexdigest()
         
         headers = {

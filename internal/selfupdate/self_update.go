@@ -715,6 +715,8 @@ func runHooksInstallWithBinary(binaryPath string, verbose bool) error {
 		return fmt.Errorf("hooks install binary not accessible: %w", err)
 	}
 
+	// Safe: binary path is constrained to basename lrc/lrc.exe and must exist before execution.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.Command(cleaned, "hooks", "install")
 	if verbose {
 		cmd.Stdout = os.Stdout

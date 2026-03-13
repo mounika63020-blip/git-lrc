@@ -92,6 +92,7 @@ def get_upload_url(api_url: str, token: str, bucket_id: str) -> Dict:
 
 
 def upload_manifest(upload_data: Dict, manifest_bytes: bytes, b2_file_name: str) -> None:
+    # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
     sha1 = hashlib.sha1(manifest_bytes).hexdigest()  # nosec B324 - required by B2 API
     headers = {
         "Authorization": upload_data["authorizationToken"],
