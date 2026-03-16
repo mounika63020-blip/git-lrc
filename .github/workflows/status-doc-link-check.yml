@@ -1,0 +1,29 @@
+name: Status Doc Link Check
+
+on:
+  push:
+    paths:
+      - "network/**"
+      - "storage/**"
+      - "scripts/check-status-doc-links.sh"
+      - ".github/workflows/status-doc-link-check.yml"
+  pull_request:
+    paths:
+      - "network/**"
+      - "storage/**"
+      - "scripts/check-status-doc-links.sh"
+      - ".github/workflows/status-doc-link-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-status-doc-links:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify status doc links and symbols
+        run: bash scripts/check-status-doc-links.sh
