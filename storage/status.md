@@ -1,0 +1,117 @@
+# Storage Operations Status
+
+Last Reviewed: 2026-03-16
+Audience: Engineering, Procurement, Security Vetting, CISO
+Scope: Local persistence and file system operations in the storage boundary
+
+## Executive Summary
+
+This document tracks storage-side operations in git-lrc as an auditable inventory for enterprise due diligence.
+
+- Storage boundary: local file system and local SQLite only (no outbound API calls in this package).
+- Modes represented: file, db.
+- Operation count tracked: 39 operations.
+- Severity distribution: High 10, Medium 11, Low 18.
+- Primary sensitive data in scope: API keys and connector state in config, review metadata in SQLite, hook scripts and metadata, update lock/state metadata.
+- Highest-risk operation classes: credential file read/write, recursive deletion, permission changes, direct SQL execution wrappers.
+- Primary compensating controls already present: atomic writes for critical files, SQLite WAL mode and busy timeout, explicit chmod utility usage, typed wrapper functions and contextual error wrapping.
+
+## Severity Rubric
+
+- High: operation can expose credentials, alter integrity-critical state, perform broad deletion, change permissions, or mutate persistent review/session records.
+- Medium: operation mutates non-critical persisted state or reads/writes operational data that can impact behavior but is lower sensitivity.
+- Low: operation creates directories, reads low-sensitivity input, or performs cleanup with limited impact.
+
+## Risk Acknowledgement Rules
+
+- Every operation row must state known risk and compensation status.
+- High-severity rows must include explicit compensation or explicit suggestion marker.
+- Suggestion marker format: Suggestion: <compensation>
+- Acceptable residual risk must be called out when controls are considered sufficient.
+
+## Inventory: Config And Credential I/O
+
+| Operation | Mode | Data Handled | Purpose | Severity | Risk Acknowledgement | Compensation Status | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ReadConfigFile | file | TOML config bytes including API key and connector state | Load CLI configuration from ~/.lrc.toml | High | Credential disclosure risk if file is too permissive | Compensated by strict mode enforcement via chmod path; residual risk acceptable with 0600 policy | [storage/config_io.go](storage/config_io.go) |
+| WriteFileAtomically | file | Generic file bytes (used for durable state/config writes) | Persist file content using temp-and-rename pattern | High | Integrity risk from partial/truncated writes | Compensated by atomic temp-then-rename; residual risk acceptable for local FS assumptions | [storage/files.go](storage/files.go) |
+| Chmod | file | File mode bits (0600/0755 style permissions) | Enforce permission model on config and scripts | High | Misconfiguration risk if wrong mode is applied | Partially compensated by centralized wrapper; Suggestion: add mode-specific tests for secret files | [storage/files.go](storage/files.go) |
+| MkdirAll | file | Directory paths | Create required storage folders safely | Low | Low risk of directory sprawl/path misuse | Compensated by controlled internal callsites; acceptable risk | [storage/files.go](storage/files.go) |
+
+## Inventory: Review And Attestation Database
+
+| Operation | Mode | Data Handled | Purpose | Severity | Risk Acknowledgement | Compensation Status | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| OpenAttestationReviewDB | db | SQLite handle for review sessions | Open persistent review DB with WAL behavior | High | DB integrity/availability risk on contention or corruption | Compensated by WAL mode and busy timeout in open path; residual risk acceptable | [storage/attestation_review_db_io.go](storage/attestation_review_db_io.go) |
+| InitializeAttestationReviewSchema | db | SQL DDL for review_sessions | Create required schema for branch review tracking | High | Schema drift risk impacts audit evidence correctness | Partially compensated by centralized init path; Suggestion: add explicit schema version check note | [storage/attestation_review_db_io.go](storage/attestation_review_db_io.go) |
+| InsertAttestationReviewSessionRow | db | branch, tree_hash, action, diff files, review_id, timestamp | Record review session evidence | High | Audit trail tampering/inconsistency risk | Compensated by single writer path and typed insert wrapper; residual risk acceptable | [storage/attestation_review_db_io.go](storage/attestation_review_db_io.go) |
+| QueryAttestationReviewSessionCountByBranch | db | Aggregate count | Report branch review volume | Medium | Reporting accuracy risk if stale or partial state | Compensated by direct DB query on canonical table; acceptable risk | [storage/attestation_review_db_io.go](storage/attestation_review_db_io.go) |
+| QueryAttestationReviewedSessionsByBranch | db | Ordered review session rows | Retrieve historical review evidence by branch | Medium | Evidence retrieval ordering/completeness risk | Compensated by explicit ordering query; acceptable risk | [storage/attestation_review_db_io.go](storage/attestation_review_db_io.go) |
+| DeleteAttestationReviewSessionsByBranch | db | Branch-scoped review rows | Purge branch review history | High | Data loss and forensic gap risk | Partially compensated by scoped delete API; Suggestion: add optional dry-run/logged delete mode | [storage/attestation_review_db_io.go](storage/attestation_review_db_io.go) |
+| DeleteAllAttestationReviewSessions | db | Entire review_sessions table | Administrative full wipe of review history | High | High-impact irreversible evidence loss risk | Partially compensated by explicit admin operation boundary; Suggestion: require confirmation gate in caller | [storage/attestation_review_db_io.go](storage/attestation_review_db_io.go) |
+| OpenSQLite | db | Generic SQLite connection and PRAGMA state | Standardized DB opener utility | High | Broad DB behavior risk if PRAGMA policy regresses | Compensated by centralized opener policy and wrapped errors; residual risk acceptable | [storage/files.go](storage/files.go) |
+| ExecSQL | db | SQL statement plus args | Execute SQL with wrapped errors | High | SQL misuse risk from broad execution capability | Partially compensated by internal wrapper and parameter passing; Suggestion: restrict callsites to vetted query paths | [storage/files.go](storage/files.go) |
+
+## Inventory: Hook Lifecycle Storage
+
+| Operation | Mode | Data Handled | Purpose | Severity | Risk Acknowledgement | Compensation Status | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| EnsureHooksPathDir | file | .git/hooks directory path | Ensure Git hooks root exists | Low | Low risk from directory creation side effects | Compensated by predictable git path target; acceptable risk | [storage/hook_io.go](storage/hook_io.go) |
+| EnsureManagedHooksDir | file | .git/hooks/lrc directory | Provision lrc-managed hook directory | Low | Low risk of local repo state mutation | Compensated by dedicated managed subdirectory; acceptable risk | [storage/hook_io.go](storage/hook_io.go) |
+| EnsureHooksBackupDir | file | .git/hooks/.lrc_backups directory | Provision backup location for displaced hooks | Low | Low risk of backup directory growth | Compensated by scoped location and cleanup routines; acceptable risk | [storage/hook_io.go](storage/hook_io.go) |
+| EnsureRepoLRCStateDir | file | .git/lrc directory | Provision repo-local lrc state storage | Low | Low risk from creating local state directory | Compensated by deterministic repo-local path; acceptable risk | [storage/hook_io.go](storage/hook_io.go) |
+| ReadHookFile | file | Hook script bytes | Inspect existing hook script content | Medium | Medium risk of parsing/handling untrusted local hook content | Compensated by read-only behavior and bounded scope; acceptable risk | [storage/hook_io.go](storage/hook_io.go) |
+| ReadHookMetaFile | file | Hook metadata JSON bytes | Load metadata used for hook management | Medium | Metadata poisoning risk from local tampering | Partially compensated by controlled metadata format; Suggestion: add schema validation check | [storage/hook_io.go](storage/hook_io.go) |
+| RemoveHookMetaFile | file | Hook metadata file | Cleanup metadata during uninstall/reset | Low | Low risk of leaving stale metadata if delete fails | Compensated by cleanup intent and low criticality; acceptable risk | [storage/hook_io.go](storage/hook_io.go) |
+| RemoveManagedHooksDir | file | .git/hooks/lrc directory tree | Remove lrc-managed hooks during uninstall | Medium | Medium risk of accidental broad deletion | Compensated by fixed managed directory target; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveHooksBackupDir | file | .git/hooks/.lrc_backups directory tree | Remove hook backup tree during cleanup | Medium | Medium risk of losing restoration artifacts | Partially compensated by explicit backup path boundary; Suggestion: optional backup retention switch | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveHookBackupFile | file | Individual backup script | Remove stale backup files | Medium | Medium risk of removing needed backup artifact | Compensated by explicit file-target deletion path; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveHookScriptFile | file | Individual hook script | Remove managed hook scripts | Medium | Medium risk of removing expected hook behavior | Compensated by managed-hook ownership model; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveRepoHooksDisabledMarker | file | Marker file in repo state | Clear local marker used to disable hook path behavior | Low | Low risk of local behavior drift if marker handling fails | Compensated by simple marker semantics; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveDirIfEmpty | file | Directory path | Defensive cleanup only if empty | Low | Low risk of unintended deletion | Compensated by emptiness check guard; acceptable risk | [storage/hook_io.go](storage/hook_io.go) |
+
+## Inventory: Review Inputs, Temporary Files, And Cleanup
+
+| Operation | Mode | Data Handled | Purpose | Severity | Risk Acknowledgement | Compensation Status | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ReadInitialMessageFile | file | Initial review prompt text | Load user-provided message for review request flow | Low | Low sensitivity text read risk | Compensated by local read-only operation; acceptable risk | [storage/review_input_io.go](storage/review_input_io.go) |
+| ReadDiffFile | file | Diff bytes | Load diff payload before review submission | Medium | Medium confidentiality risk for code diff content | Partially compensated by local-only read path; Suggestion: document max retention expectations | [storage/review_input_io.go](storage/review_input_io.go) |
+| CreateTempReviewHTMLFile | file | Temporary HTML file handle/content | Create temporary location for rendered review output | Low | Low to medium leakage risk if temp files linger | Partially compensated by cleanup operations; Suggestion: enforce cleanup-on-exit where possible | [storage/review_input_io.go](storage/review_input_io.go) |
+| RemoveTempHTMLFile | file | Temporary HTML file | Cleanup rendered review temp artifact | Low | Low risk if cleanup fails and file remains | Compensated by dedicated cleanup call; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveSetupLogFile | file | Setup log file | Cleanup setup diagnostics artifact | Low | Low risk if diagnostic artifact persists | Compensated by cleanup path and low sensitivity default; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveReauthLogFile | file | Re-auth log file | Cleanup auth diagnostics artifact | Low | Low to medium risk if logs capture sensitive context | Partially compensated by explicit deletion utility; Suggestion: verify log redaction policy | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveEditorWrapperScript | file | Temporary shell wrapper script | Cleanup git editor wrapper used during review flow | Low | Low risk from temporary script persistence | Compensated by explicit cleanup path; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveEditorBackupStateFile | file | Editor backup state JSON | Cleanup backup state artifact | Low | Low risk from stale local state file | Compensated by explicit cleanup path; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveCommitMessageOverrideFile | file | Commit message override file | Cleanup pending override from commit pipeline | Low | Low risk from stale override file affecting UX | Compensated by cleanup routine; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+| RemoveCommitPushRequestFile | file | Push-request marker file | Cleanup post-commit push marker | Low | Low risk of stale marker state | Compensated by simple marker cleanup semantics; acceptable risk | [storage/file_delete_io.go](storage/file_delete_io.go) |
+
+## Inventory: Self-Update State And Lock Files
+
+| Operation | Mode | Data Handled | Purpose | Severity | Risk Acknowledgement | Compensation Status | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ReadPendingUpdateStateBytes | file | Update state JSON (version, binary path, timestamp) | Read staged update metadata for upgrade flow | Medium | Medium integrity risk if state is tampered locally | Partially compensated by structured metadata read; Suggestion: add integrity marker/signature check | [storage/file_read_io.go](storage/file_read_io.go) |
+| ReadUpdateLockMetadataBytes | file | Lock metadata JSON (pid, uid, command, version) | Read lock metadata for update concurrency awareness | Medium | Medium risk if lock semantics are informational only | Partially compensated by visibility into lock owner; Suggestion: document/enforce lock semantics in caller | [storage/file_read_io.go](storage/file_read_io.go) |
+| OpenFileForRead | file | File handle in read mode | Controlled read access helper | Low | Low risk helper abstraction | Compensated by narrow read-only intent; acceptable risk | [storage/file_read_io.go](storage/file_read_io.go) |
+
+## Control Signals For Security Review
+
+- Boundary separation: storage package centralizes local persistence operations, simplifying audit scope.
+- Atomic persistence available: WriteFileAtomically reduces partial-write risk for critical state.
+- Permission control available: Chmod utility enables restricted modes for secrets and executable scripts.
+- DB durability and contention controls: SQLite WAL mode and busy timeout are configured through opener utilities.
+- Error context wrapping: most storage wrappers include operation-specific context in error paths.
+
+## Known Gaps And Follow-Ups
+
+| Gap | Why It Matters | Follow-Up |
+| --- | --- | --- |
+| Duplicate query paths for review sessions exist across storage files | Duplicate logic can drift and confuse auditors | Identify canonical path and deprecate duplicate wrapper set |
+| Explicit schema migration workflow for review DB is not documented in this package | Harder to reason about schema evolution controls | Add schema evolution note and migration policy reference in docs |
+| Lock metadata read path is documented, lock enforcement semantics are not explicit here | Concurrency guarantees for update flow may be unclear | Document enforcement owner and decision path in update docs |
+| Some cleanup calls intentionally ignore non-critical errors | May reduce forensic clarity in uninstall/cleanup incidents | Document which cleanup failures are intentionally non-fatal |
+
+## Review Cadence
+
+- Update this file when any function is added/removed/renamed in the storage package.
+- Re-evaluate severity when data sensitivity changes or when operation side effects change.
+- Security review trigger: any new High operation or any change touching credentials, permissions, deletion scope, or DB mutation behavior.
