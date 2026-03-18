@@ -1,4 +1,4 @@
-.PHONY: build build-all build-local build-local-test run run-fake-review bump release clean test testall test-pkg upload-secrets download-secrets security-govulncheck security-govulncheck-json security-osv security-triage security-gitleaks security-b2-audit security-b2-cleanup-plan security-b2-cleanup-apply security-publish-release-manifest security-secret-regression
+.PHONY: build build-win build-all build-local build-local-test run run-fake-review bump release clean test testall test-pkg upload-secrets download-secrets security-govulncheck security-govulncheck-json security-osv security-triage security-gitleaks security-b2-audit security-b2-cleanup-plan security-b2-cleanup-apply security-publish-release-manifest security-secret-regression
 
 # Go parameters
 GOCMD=go
@@ -15,6 +15,14 @@ ENV_VARS=B2_KEY_ID B2_APP_KEY B2_BUCKET_NAME B2_BUCKET_ID
 # Build lrc for the current platform
 build:
 	$(GOBUILD) -o $(BINARY_NAME) .
+
+# Build lrc for Windows (amd64)
+# Output: dist/windows/lrc.exe
+build-win:
+	@echo "🔨 Building lrc CLI for Windows (amd64)..."
+	@mkdir -p dist/windows
+	@GOOS=windows GOARCH=amd64 $(GOBUILD) -o dist/windows/$(BINARY_NAME).exe .
+	@echo "✅ Built dist/windows/$(BINARY_NAME).exe"
 
 # Build lrc for all platforms (linux/darwin/windows × amd64/arm64)
 # Output: dist/<platform>/lrc[.exe] + SHA256SUMS
