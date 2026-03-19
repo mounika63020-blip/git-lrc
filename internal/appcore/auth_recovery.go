@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -306,7 +306,7 @@ func persistConfigUpdates(configPath, apiURL string, updates map[string]string) 
 	content := ""
 	if existingBytes, err := storage.ReadConfigFile(resolvedConfigPath); err == nil {
 		content = string(existingBytes)
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 

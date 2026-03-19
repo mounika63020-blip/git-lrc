@@ -1,8 +1,9 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"strings"
 	"time"
 
@@ -27,7 +28,7 @@ func BackupExistingConfig(logf func(format string, args ...interface{})) (string
 
 	data, err := storage.ReadConfigFile(configPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			log("no existing config found")
 			return "", nil
 		}

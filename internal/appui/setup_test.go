@@ -62,6 +62,26 @@ func TestBackupExistingConfigBacksUpNonEmptyConfig(t *testing.T) {
 	}
 }
 
+func TestBackupExistingConfigSkipsMissingConfig(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	slog := newSetupLog()
+	if err := backupExistingConfig(slog); err != nil {
+		t.Fatalf("backup existing config on first run: %v", err)
+	}
+
+	configPath := filepath.Join(tmpHome, ".lrc.toml")
+	matches, err := filepath.Glob(configPath + ".bak.*")
+	if err != nil {
+		t.Fatalf("glob backup files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no backup file for missing config, got %d", len(matches))
+	}
+}
+
 func TestWriteConfigIncludesSessionFields(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
