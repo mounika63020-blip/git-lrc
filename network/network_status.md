@@ -1,6 +1,6 @@
 # Network Operations Status
 
-Last Reviewed: 2026-03-17
+Last Reviewed: 2026-03-19
 Audience: Engineering, Procurement, Security Vetting, CISO
 Scope: Outbound and proxied network operations in the network boundary
 
@@ -10,8 +10,8 @@ This document tracks network-side operations in git-lrc as an auditable inventor
 
 - Network boundary: outbound HTTP API operations and response handling in network package.
 - Modes represented: api.
-- Operation count tracked: 17 operations.
-- Severity distribution: High 8, Medium 7, Low 2.
+- Operation count tracked: 18 operations.
+- Severity distribution: High 9, Medium 7, Low 2.
 - Primary sensitive data in scope: API keys, bearer tokens, org-context headers, diff content, connector validation payloads, update manifest metadata, binary download stream.
 - Highest-risk operation classes: review submission/polling, setup credential operations, proxy forwarding paths, binary download operations.
 - Primary compensating controls already present: explicit auth header usage by flow, URL normalization helpers, host allowlist check for self-update download sources, timeout-based polling with cancellation support.
@@ -42,9 +42,10 @@ This document tracks network-side operations in git-lrc as an auditable inventor
 | Operation | Mode | Data Handled | Purpose | Severity | Risk Acknowledgement | Compensation Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | SetupEnsureCloudUser | api | Access-token-authenticated identity payload | Ensure cloud user record exists during setup | High | Authentication-context misuse risk | Compensated by bearer token boundary and scoped setup endpoint; residual risk acceptable | [network/setup_operations.go](setup_operations.go#L6) |
-| SetupCreateAPIKey | api | API key label and returned plaintext API key | Create connector/review API key | High | High sensitivity secret material exposure risk | Compensated by explicit auth flow and setup caller no-log/no-echo handling for create-key error paths; residual risk acceptable | [network/setup_operations.go](setup_operations.go#L11) |
-| SetupValidateConnectorKey | api | Provider key and validation request body | Validate AI connector key before persistence | High | Third-party key exposure/handling risk | Compensated by authenticated request path plus connector key redaction in setup error surfaces; residual risk acceptable | [network/setup_operations.go](setup_operations.go#L16) |
-| SetupCreateConnector | api | Connector configuration payload | Persist connector configuration via LiveReview API | High | Misconfiguration and sensitive metadata transmission risk | Compensated by bearer auth plus org context boundary; residual risk acceptable | [network/setup_operations.go](setup_operations.go#L21) |
+| SetupRefreshTokens | api | Refresh token request payload and returned token set | Refresh auth session tokens during setup and re-auth flows | High | Token handling and session integrity risk | Compensated by scoped auth-refresh endpoint and typed request path in setup operations; residual risk acceptable | [network/setup_operations.go](setup_operations.go#L11) |
+| SetupCreateAPIKey | api | API key label and returned plaintext API key | Create connector/review API key | High | High sensitivity secret material exposure risk | Compensated by explicit auth flow and setup caller no-log/no-echo handling for create-key error paths; residual risk acceptable | [network/setup_operations.go](setup_operations.go#L16) |
+| SetupValidateConnectorKey | api | Provider key and validation request body | Validate AI connector key before persistence | High | Third-party key exposure/handling risk | Compensated by authenticated request path plus connector key redaction in setup error surfaces; residual risk acceptable | [network/setup_operations.go](setup_operations.go#L21) |
+| SetupCreateConnector | api | Connector configuration payload | Persist connector configuration via LiveReview API | High | Misconfiguration and sensitive metadata transmission risk | Compensated by bearer auth plus org context boundary; residual risk acceptable | [network/setup_operations.go](setup_operations.go#L26) |
 
 ## Inventory: Proxy And Forwarding APIs
 
@@ -68,8 +69,8 @@ This document tracks network-side operations in git-lrc as an auditable inventor
 | Client.DoJSON | api | Request/response JSON payload bytes | Standard JSON HTTP call wrapper | Medium | Medium risk from broad transport usage and status-handling variance | Compensated by centralized transport wrapper with timeout controls; acceptable risk | [network/http_client.go](http_client.go#L43) |
 | Client.Do | api | Raw HTTP request/response bytes | Generic HTTP call wrapper for non-JSON/raw workflows | Medium | Medium risk from raw payload handling flexibility | Partially compensated by shared client boundary; Suggestion: document callsite expectations for raw bodies | [network/http_client.go](http_client.go#L89) |
 | SetupEnsureCloudUserURL | api | Base URL plus endpoint normalization inputs | Normalize endpoint composition and reduce path ambiguity | Medium | Medium risk if normalization logic diverges from endpoint assumptions | Compensated by centralized URL builder utility; acceptable risk | [network/endpoints.go](endpoints.go#L13) |
-| PollReview | api | Review IDs, status payloads, timeout state | Timeout-bounded polling orchestration in review runtime | High | High availability/latency risk if review service is degraded | Compensated by bounded timeout and interval controls; residual risk acceptable | [internal/reviewapi/helpers.go](../internal/reviewapi/helpers.go#L160) |
-| formatJSONParseError | api | Response body text for parse diagnostics | Improve operator diagnostics when endpoint/port mismatches occur | Low | Low risk diagnostic utility behavior | Compensated by safer error interpretation path; acceptable risk | [internal/reviewapi/helpers.go](../internal/reviewapi/helpers.go#L88) |
+| PollReview | api | Review IDs, status payloads, timeout state | Timeout-bounded polling orchestration in review runtime | High | High availability/latency risk if review service is degraded | Compensated by bounded timeout and interval controls; residual risk acceptable | [internal/reviewapi/helpers.go](../internal/reviewapi/helpers.go#L161) |
+| formatJSONParseError | api | Response body text for parse diagnostics | Improve operator diagnostics when endpoint/port mismatches occur | Low | Low risk diagnostic utility behavior | Compensated by safer error interpretation path; acceptable risk | [internal/reviewapi/helpers.go](../internal/reviewapi/helpers.go#L89) |
 
 ## Control Signals For Security Review
 
