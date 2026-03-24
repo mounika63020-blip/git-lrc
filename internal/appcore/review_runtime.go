@@ -670,6 +670,8 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 
 	// Interactive path (default): set up decision channels for Ctrl-C / Ctrl-S and poll
 	decisionCode := -1
+	decisionMessage := ""
+	decisionPush := false
 	if useInteractive {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -719,6 +721,10 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 		var pollUpdatedConfig Config
 		pollUsedRecovery := false
 		pollDone := make(chan struct{})
+		var webDecisionChan <-chan progressiveDecision
+		if progressiveLoadingActive && progressiveDecisionChan != nil {
+			webDecisionChan = progressiveDecisionChan
+		}
 		stopPoll := make(chan struct{})
 		var stopPollOnce sync.Once
 		stopPollFn := func() { stopPollOnce.Do(func() { close(stopPoll) }) }
@@ -737,6 +743,12 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 		case decisionCode = <-decisionChan:
 			stopCtrlSFn()
 			stopPollFn()
+		case webDecision := <-webDecisionChan:
+			decisionCode = webDecision.code
+			decisionMessage = webDecision.message
+			decisionPush = webDecision.push
+			stopCtrlSFn()
+			stopPollFn()
 		case <-pollDone:
 			pollFinished = true
 		}
@@ -753,6 +765,10 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 			select {
 			case decisionCode = <-decisionChan:
 				// got user decision
+			case webDecision := <-webDecisionChan:
+				decisionCode = webDecision.code
+				decisionMessage = webDecision.message
+				decisionPush = webDecision.push
 			case <-time.After(300 * time.Millisecond):
 				// no decision quickly; proceed with poll result
 			}
@@ -760,7 +776,11 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 			if pollErr != nil {
 				if errors.Is(pollErr, reviewapi.ErrPollCancelled) {
 					if decisionCode != -1 {
-						return executeDecision(decisionCode, initialMsg, false, decisionExecutionContext{
+						message := decisionMessage
+						if strings.TrimSpace(message) == "" {
+							message = initialMsg
+						}
+						return executeDecision(decisionCode, message, decisionPush, decisionExecutionContext{
 							precommit:          opts.Precommit,
 							verbose:            verbose,
 							initialMsg:         initialMsg,
@@ -825,7 +845,11 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 
 		// If a decision happened before we proceed, act now
 		if decisionCode != -1 {
-			return executeDecision(decisionCode, initialMsg, false, decisionExecutionContext{
+			message := decisionMessage
+			if strings.TrimSpace(message) == "" {
+				message = initialMsg
+			}
+			return executeDecision(decisionCode, message, decisionPush, decisionExecutionContext{
 				precommit:          opts.Precommit,
 				verbose:            verbose,
 				initialMsg:         initialMsg,
@@ -920,15 +944,15 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 			// Don't start a new server - wait for decisions from HTTP or terminal.
 			if progressiveLoadingActive {
 				// Progressive loading active - server already running on opts.Port
-				syncedPrintf("\n📋 Review complete. Choose action:\n")
-				syncedPrintf("   [Enter]  Continue with commit\n")
-				syncedPrintf("   [Ctrl-C] Abort commit\n")
-				syncedPrintf("   Or use the web UI buttons\n\n")
-				if strings.TrimSpace(initialMsg) != "" {
-					syncedPrintf("   Current commit message: %s\n\n", initialMsg)
+				prompt := decisionPrompt{
+					Title:       "Review complete. Choose action",
+					Description: "Use terminal keys or the web UI buttons.",
+					AllowCommit: true,
+					AllowAbort:  true,
 				}
+				tuiDecisionCh, stopTUI, tuiDone := startTerminalDecisionBubbleTea(prompt)
 
-				// Set up terminal input handlers that call progressiveDecide
+				// Signals still map to abort decisions.
 				sigChan := make(chan os.Signal, 1)
 				signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 				defer signal.Stop(sigChan)
@@ -940,38 +964,18 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 					}
 				}()
 
-				stopKeys := make(chan struct{})
-				keysDone := make(chan struct{})
 				go func() {
-					defer close(keysDone)
-					for {
-						code, err := ctrlkey.HandleWithCancel(stopKeys, true)
-						if errors.Is(err, reviewapi.ErrInputCancelled) {
-							return
-						}
-						if err != nil || code == 0 {
-							fallbackCode, fallbackErr := handleEnterFallbackWithCancel(stopKeys)
-							if fallbackErr == nil && fallbackCode == decisionflow.DecisionCommit {
-								if progressiveSubmit != nil {
-									progressiveSubmit(decisionruntime.SourceTerminal, decisionflow.DecisionCommit, "", false)
-								}
-							}
-							return
-						}
-						if code == decisionflow.DecisionSkip || code == decisionflow.DecisionVouch {
-							continue
-						}
+					for code := range tuiDecisionCh {
 						if progressiveSubmit != nil {
 							progressiveSubmit(decisionruntime.SourceTerminal, code, "", false)
 						}
-						return
 					}
 				}()
 
 				// Wait for decision from either HTTP endpoint or terminal
 				decision := <-progressiveDecisionChan
-				close(stopKeys)
-				<-keysDone
+				stopTUI()
+				<-tuiDone
 				return executeDecision(decision.code, decision.message, decision.push, decisionExecutionContext{
 					precommit:          opts.Precommit,
 					verbose:            verbose,
@@ -2174,56 +2178,34 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 
 	<-serverReady
 
-	// Wait for decision: Enter, Ctrl-C, HTML buttons
-	// Set up signal handling for Ctrl-C
+	// Wait for decision: terminal Bubble Tea, Ctrl-C signal, or HTML buttons
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
+
+	prompt := decisionPrompt{
+		Title:       "Review complete. Choose action",
+		Description: "Use terminal keys or web UI buttons.",
+		AllowCommit: true,
+		AllowAbort:  true,
+	}
+	tuiDecisionCh, stopTUI, tuiDone := startTerminalDecisionBubbleTea(prompt)
+
 	go func() {
 		<-sigChan
 		submit(decisionruntime.SourceSignal, decisionflow.DecisionAbort, "", false)
 	}()
 
-	stopKeys := make(chan struct{})
-	keysDone := make(chan struct{})
 	go func() {
-		defer close(keysDone)
-		for {
-			code, err := ctrlkey.HandleWithCancel(stopKeys, true)
-			if errors.Is(err, reviewapi.ErrInputCancelled) {
-				return
-			}
-			if err != nil || code == 0 {
-				fallbackCode, fallbackErr := handleEnterFallbackWithCancel(stopKeys)
-				if fallbackErr == nil && fallbackCode == decisionflow.DecisionCommit {
-					submit(decisionruntime.SourceTerminal, decisionflow.DecisionCommit, "", false)
-				}
-				return
-			}
-			if code == decisionflow.DecisionSkip || code == decisionflow.DecisionVouch {
-				continue
-			}
+		for code := range tuiDecisionCh {
 			submit(decisionruntime.SourceTerminal, code, "", false)
-			return
 		}
 	}()
 
-	defer func() {
-		close(stopKeys)
-		<-keysDone
-	}()
-
-	syncedPrintf("📋 Review complete. Choose action:\n")
-	syncedPrintf("   [Enter]  Continue with commit\n")
-	syncedPrintf("   [Ctrl-C] Abort commit\n")
-	syncedPrintf("   Or use the web UI buttons\n")
-	if strings.TrimSpace(initialMsg) != "" {
-		syncedPrintf("(current message): %s\n", initialMsg)
-	}
-	syncedPrintln()
-
 	// Wait for any decision source
 	decision := <-decisionChan
+	stopTUI()
+	<-tuiDone
 
 	switch decision.code {
 	case decisionflow.DecisionCommit:
